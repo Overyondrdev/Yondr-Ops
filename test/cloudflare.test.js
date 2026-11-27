@@ -31,6 +31,20 @@ test('Access: every gated host must be in the Bypass app', () => {
   assert.match(evaluateAccess([{ ...app, self_hosted_domains: hosts, policies: [{ decision: 'allow' }] }], hosts).detail, /no Bypass policy/);
 });
 
+test('Access: no app on overyondrdev.com may cost seats (the catch-all included)', () => {
+  const hosts = ['v1.overyondrdev.com'];
+  const app = { name: 'Yondr sites (Google sign-in)', destinations: [{ uri: 'v1.overyondrdev.com' }], policies: [{ decision: 'bypass' }] };
+  const wildcard = { name: 'catch-all', domain: '*.overyondrdev.com', destinations: [{ uri: '*.overyondrdev.com' }], policies: [{ decision: 'bypass' }] };
+  assert.equal(evaluateAccess([app, wildcard], hosts).ok, true);
+  const r = evaluateAccess([app, { ...wildcard, policies: [{ decision: 'allow' }] }], hosts);
+  assert.equal(r.ok, false);
+  assert.equal(r.severity, 'high');
+  assert.match(r.detail, /catch-all/);
+  assert.equal(r.fingerprint, 'seat:catch-all');
+  // Apps for other domains are not ours to judge.
+  assert.equal(evaluateAccess([app, { name: 'other', domain: 'example.com', policies: [{ decision: 'allow' }] }], hosts).ok, true);
+});
+
 test('inventory: new or missing resources are a warning with a stable fingerprint', () => {
   assert.equal(evaluateInventory('d1', ['a', 'b'], ['b', 'a']).ok, true);
   const r = evaluateInventory('r2', ['a', 'c'], ['a', 'b']);

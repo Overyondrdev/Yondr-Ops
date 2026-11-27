@@ -72,17 +72,20 @@ function hostOf(s) {
   return String(s || '').replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
 }
 
-/** The Bypass app must list every host that checks the Yondr sign-in itself; otherwise Access charges seats. */
+/**
+ * No Access seats, ever (owner's rule): the Bypass app must list every host that checks the Yondr sign-in itself, and no
+ * Access app on overyondrdev.com (the `*.overyondrdev.com` catch-all included) may have a policy that isn't Bypass.
+ */
 export function evaluateAccess(apps, gatedHosts = GATED_HOSTS, appName = ACCESS_BYPASS_APP) {
   const id = 'cf:access-bypass';
   const site = 'Cloudflare Access';
   const app = (apps || []).find((a) => a.name === appName);
   if (!app) {
     return { id, site, ok: false, event: 'config_drift', severity: 'warning', fingerprint: 'missing-app', title: `Access app "${appName}" not found`,
-      detail: `The Cloudflare Access application "${appName}" (Bypass for the sites that check the Yondr sign-in themselves) is missing or renamed. Hosts may fall back to the wildcard Access app, and every sign-in there costs a seat.` };
+      detail: `The Cloudflare Access application "${appName}" (Bypass for the sites that check the Yondr sign-in themselves) is missing or renamed. Hosts then rely on the catch-all *.overyondrdev.com app; if that is ever not Bypass, every sign-in costs a seat.` };
   }
   // A host is covered if the main Bypass app lists it, or another Access app with a Bypass policy lists it exactly
-  // (e.g. auth. and cards. have their own Bypass apps). Wildcard apps never count: they are the seat-costing fallback.
+  // (e.g. auth. and cards. have their own Bypass apps). Wildcard apps don't count: a new host must be listed explicitly.
   const appHosts = (a) => [a.domain, ...(a.self_hosted_domains || []), ...((a.destinations || []).map((d) => d.uri))].filter(Boolean).map(hostOf);
   const hosts = new Set(appHosts(app));
   for (const other of apps || []) {
@@ -92,12 +95,17 @@ export function evaluateAccess(apps, gatedHosts = GATED_HOSTS, appName = ACCESS_
   const missing = gatedHosts.filter((h) => !hosts.has(h)).sort();
   const policies = app.policies || [];
   const notBypass = policies.length > 0 && !policies.some((p) => p.decision === 'bypass');
-  if (!missing.length && !notBypass) return { id, site, ok: true, detail: `All ${gatedHosts.length} sites are covered by a Bypass app (no Access seats).` };
+  // Any app on overyondrdev.com with an Allow (or other non-Bypass) policy charges a seat per person who passes it.
+  const seatApps = (apps || []).filter((a) => appHosts(a).some((h) => /(^|\.)overyondrdev\.com$/.test(h.replace(/^\*\./, '')))
+    && (a.policies || []).some((p) => p.decision && p.decision !== 'bypass')).map((a) => a.name).sort();
+  if (!missing.length && !notBypass && !seatApps.length) return { id, site, ok: true, detail: `All ${gatedHosts.length} sites are covered by a Bypass app, and no Access app on overyondrdev.com can cost a seat.` };
   const parts = [];
-  if (missing.length) parts.push(`Not covered by any Bypass app: ${missing.join(', ')}. Signed-in visits to these hosts go through Cloudflare Access and cost a seat each.`);
+  if (seatApps.length) parts.push(`Access apps with a policy that isn't Bypass (each person who signs in through them costs a seat): ${seatApps.join(', ')}. Owner's rule: no Access seats, ever. Set the policy back to Bypass (Zero Trust → Access → Applications).`);
+  if (missing.length) parts.push(`Not covered by any Bypass app: ${missing.join(', ')}. Add them to "${appName}".`);
   if (notBypass) parts.push('The app has no Bypass policy any more.');
-  return { id, site, ok: false, event: 'config_drift', severity: 'warning', fingerprint: [...missing, notBypass ? 'no-bypass' : ''].join(','),
-    title: missing.length ? `${missing.length} site${missing.length > 1 ? 's' : ''} missing from the Access Bypass app` : 'Access Bypass app has no Bypass policy',
+  return { id, site, ok: false, event: 'config_drift', severity: seatApps.length ? 'high' : 'warning',
+    fingerprint: [...missing, notBypass ? 'no-bypass' : '', ...seatApps.map((n) => 'seat:' + n)].filter(Boolean).join(','),
+    title: seatApps.length ? 'An Access app can cost seats' : missing.length ? `${missing.length} site${missing.length > 1 ? 's' : ''} missing from the Access Bypass app` : 'Access Bypass app has no Bypass policy',
     detail: parts.join(' ') };
 }
 
