@@ -2,12 +2,13 @@
 // cookie; instead they send the shared secret OPS_INGEST_TOKEN in the X-Ops-Token header.
 //   POST /api/events            raise an event (validated, de-duplicated, routed to subscribers)
 //   POST /api/autofix/events    create/update an auto-fix log entry (src/autofix.js)
+//   POST /api/autofix/feedback  the feedback tool reports a new/changed item → auto-fix triage (src/triage.js)
 //   GET  /api/autofix/config    the auto-fix kill switch (also readable by signed-in admins)
 import { dispatch, EVENTS, SEVERITIES } from './alerts.js';
 import { getSettings } from './settings.js';
 
 export const TOKEN_HEADER = 'x-ops-token';
-export const TOKEN_ROUTES = new Set(['POST /api/events', 'POST /api/autofix/events', 'GET /api/autofix/config']);
+export const TOKEN_ROUTES = new Set(['POST /api/events', 'POST /api/autofix/events', 'POST /api/autofix/feedback', 'GET /api/autofix/config']);
 
 /** Constant-time comparison of the presented token with OPS_INGEST_TOKEN. */
 export async function hasIngestToken(request, env) {

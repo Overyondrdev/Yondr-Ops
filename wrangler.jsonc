@@ -10,8 +10,9 @@
   "build": { "command": "node scripts/build-static.mjs", "watch_dir": "public" },
   "observability": { "enabled": true },
   "triggers": {
-    // Every 5 minutes: monitoring (src/monitor.js). 03:17 UTC: backups (src/backups.js; BACKUP_CRON in src/index.js).
-    "crons": ["*/5 * * * *", "17 3 * * *"]
+    // Every 5 minutes: monitoring (src/monitor.js). Every 5 minutes, 2 minutes later: auto-fix queue, watch and
+    // verification (src/verify.js; AUTOFIX_CRON in src/index.js). 03:17 UTC: backups (src/backups.js; BACKUP_CRON).
+    "crons": ["*/5 * * * *", "2-59/5 * * * *", "17 3 * * *"]
   },
   "d1_databases": [
     // Ops' own data (created 27 Nov 2026).
@@ -27,6 +28,8 @@
     // Nightly backups (create it first: README "First deploy").
     { "binding": "BACKUPS", "bucket_name": "yondr-ops-backups" }
   ],
+  // Workers AI: classifies bug reports as objective or subjective for the auto-fix engine (src/classify.js).
+  "ai": { "binding": "AI" },
   "vars": {
     // Yondr Google sign-in (auth.overyondrdev.com): public key of the shared session cookie. Safe to commit.
     "YONDR_AUTH_PUBLIC_JWK": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"BpCjLJMykOsJbtPTm63rdbw2BzRUTNTz3jj9LWqK6AM\",\"y\":\"RyW0y7Dki1BQ6GnYdD-4FPovGYfoaMmDgr21lNU7xXQ\",\"kid\":\"yondr-2026-11-26-a3a7e6\"}",

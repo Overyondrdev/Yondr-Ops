@@ -151,6 +151,8 @@ export const SCHEMA = [
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS autofixes_updated ON autofixes(updated_at)`,
+  `CREATE INDEX IF NOT EXISTS autofixes_feedback ON autofixes(feedback_id)`,
+  `CREATE INDEX IF NOT EXISTS autofixes_status ON autofixes(status, updated_at)`,
   // Append-only audit log of every auto-fix step. Never UPDATE or DELETE rows here.
   `CREATE TABLE IF NOT EXISTS autofix_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,7 +174,22 @@ export const SCHEMA = [
 ];
 
 // Columns added after the first release: [table, column, type]. All nullable.
-export const ADDED_COLUMNS = [];
+//   autofixes (auto-fix engine, README "Auto-fix"):
+//     payload        the feedback item as the feedback tool sent it (JSON, no personal data), for the GitHub issue
+//     classified_by  'ai' (Workers AI) or the admin who marked it objective/subjective
+//     attempts       failed attempts to open the GitHub issue
+//     started_at     when the GitHub issue was opened (the hourly limit counts these)
+//     merged_at, deployed_at, verified_at, verify_detail   post-merge verification
+export const ADDED_COLUMNS = [
+  ['autofixes', 'payload', 'TEXT'],
+  ['autofixes', 'classified_by', 'TEXT'],
+  ['autofixes', 'attempts', 'INTEGER'],
+  ['autofixes', 'started_at', 'TEXT'],
+  ['autofixes', 'merged_at', 'TEXT'],
+  ['autofixes', 'deployed_at', 'TEXT'],
+  ['autofixes', 'verified_at', 'TEXT'],
+  ['autofixes', 'verify_detail', 'TEXT'],
+];
 
 async function addMissingColumns(db) {
   for (const [table, col, type] of ADDED_COLUMNS) {

@@ -1,4 +1,5 @@
-// The auto-fix log: what the (future) auto-fix engine did with each feedback item, and one-click revert.
+// The auto-fix log: what the auto-fix engine did with each feedback item, and one-click revert.
+// Triage and starting fixes: src/triage.js. Post-merge verification and automatic revert: src/verify.js.
 // autofixes holds the current state of each fix; autofix_events is the append-only audit log (never updated).
 import { dispatch } from './alerts.js';
 import { ALLOWED_REPOS, DASHBOARD_URL } from './checks.js';
@@ -7,8 +8,9 @@ import { getSettings } from './settings.js';
 
 export const STATUSES = ['queued', 'triaged', 'fixing', 'pr_open', 'checks_failed', 'merged', 'deployed', 'verified', 'failed', 'reverted', 'rejected'];
 export const CLASSIFICATIONS = ['objective', 'subjective'];
-// Status changes that alert, and as which event type.
-const STATUS_EVENT = { fixing: 'autofix_started', merged: 'autofix_merged', failed: 'autofix_failed', checks_failed: 'autofix_failed' };
+// Status changes that alert, and as which event type. "merged" doesn't alert: the fix is only announced once it is
+// live and verified (src/verify.js), or reverted.
+export const STATUS_EVENT = { fixing: 'autofix_started', verified: 'autofix_merged', failed: 'autofix_failed', checks_failed: 'autofix_failed' };
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const GH_URL = /^https:\/\/github\.com\/Overyondrdev\/[\w.-]+\/(issues|pull|commit)\/[\w]+/;
@@ -40,13 +42,13 @@ export function validateAutofix(b, { creating }) {
   return { fields: f, actor: str(b.actor, 80) || 'autofix-engine', message: str(b.message, 2000) || null };
 }
 
-async function addEvent(db, id, actor, status, message) {
+export async function addEvent(db, id, actor, status, message) {
   await db.prepare('INSERT INTO autofix_events (autofix_id, actor, status, message, created_at) VALUES (?, ?, ?, ?, ?)')
     .bind(id, actor, status || null, message, new Date().toISOString()).run();
 }
 
-async function alertFor(env, entry, type, settings, extra = {}) {
-  const verbs = { autofix_started: 'Auto-fix started', autofix_merged: 'Auto-fix merged', autofix_failed: 'Auto-fix failed', autofix_reverted: 'Auto-fix revert requested' };
+export async function alertFor(env, entry, type, settings, extra = {}) {
+  const verbs = { autofix_started: 'Auto-fix started', autofix_merged: 'Auto-fix live and verified', autofix_failed: 'Auto-fix failed', autofix_reverted: 'Auto-fix revert requested' };
   await dispatch(env, {
     type, kind: 'event', severity: extra.severity || (type === 'autofix_failed' ? 'high' : type === 'autofix_reverted' ? 'warning' : 'info'),
     title: `${verbs[type]}: ${entry.title}`, site: entry.project || entry.repo,
@@ -84,6 +86,8 @@ export async function ingestAutofix(env, body) {
     const changes = keys.filter((k) => prev[k] !== v.fields[k]).map((k) => (k === 'status' ? `status ${prev.status} → ${v.fields.status}` : k));
     await addEvent(db, id, v.actor, v.fields.status || prev.status, v.message || (changes.length ? `Updated: ${changes.join(', ')}` : 'No change'));
   }
+  // Merged: start the verification clock (src/verify.js).
+  if (v.fields.status === 'merged') await db.prepare("UPDATE autofixes SET merged_at = COALESCE(merged_at, ?) WHERE id = ?").bind(now, id).run();
   const entry = await db.prepare('SELECT * FROM autofixes WHERE id = ?').bind(id).first();
   if ((!prev || prev.status !== entry.status) && STATUS_EVENT[entry.status]) {
     await alertFor(env, entry, STATUS_EVENT[entry.status], await getSettings(db), { detail: v.message || undefined });
@@ -91,7 +95,9 @@ export async function ingestAutofix(env, body) {
   return { status: creating ? 201 : 200, body: { ok: true, autofix: entry } };
 }
 
+/** status: one status, 'active' (everything except rejected, i.e. not a bug), or nothing for all. */
 export async function listAutofixes(db, { status } = {}) {
+  if (status === 'active') return (await db.prepare("SELECT * FROM autofixes WHERE status != 'rejected' ORDER BY updated_at DESC LIMIT 200").all()).results;
   const where = status && STATUSES.includes(status) ? 'WHERE status = ?' : '';
   const stmt = db.prepare(`SELECT * FROM autofixes ${where} ORDER BY updated_at DESC LIMIT 200`);
   return (await (where ? stmt.bind(status) : stmt).all()).results;

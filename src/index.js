@@ -2,10 +2,12 @@
 // on https://ops.overyondrdev.com.
 //   /                   the ops dashboard (sign-in required; only feedback-tool admins/owners get in)
 //   /api/*              the dashboard API (admins; CSRF rules in ./http.js)
-//   POST /api/events, POST /api/autofix/events, GET /api/autofix/config
+//   POST /api/events, POST /api/autofix/events, POST /api/autofix/feedback, GET /api/autofix/config
 //                       server-to-server, authenticated by the X-Ops-Token header (./ingest.js)
 //   /brand/*, /robots.txt  public static files
-// Cron: every 5 minutes → monitoring (./monitor.js); 03:17 UTC → backups (./backups.js).
+// Cron: every 5 minutes → monitoring (./monitor.js); 2 minutes later, every 5 minutes → auto-fix queue, watch,
+// verification and automatic revert (./verify.js, its own invocation so it has its own subrequest budget);
+// 03:17 UTC → backups (./backups.js).
 // Static files are bundled into the script (src/static.generated.js, from public/).
 import { handleApi } from './api.js';
 import { currentUser, roleOf } from './auth.js';
@@ -14,6 +16,8 @@ import { runBackups } from './backups.js';
 import { COMMON, csrfProblem, json } from './http.js';
 import { hasIngestToken, ingestEvent, TOKEN_ROUTES } from './ingest.js';
 import { runMonitor } from './monitor.js';
+import { triageFeedback } from './triage.js';
+import { runAutofix } from './verify.js';
 import { ensureSchema } from './schema.js';
 import { getSettings } from './settings.js';
 import { FILES } from './static.generated.js';
@@ -21,6 +25,7 @@ import { loginUrl } from './yondr-session.js';
 
 // Not exported: the main module may only export handlers.
 const BACKUP_CRON = '17 3 * * *';
+const AUTOFIX_CRON = '2-59/5 * * * *';
 const PUBLIC_FILE = /^\/(robots\.txt|brand\/[\w./-]+)$/;
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
   "base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -54,7 +59,9 @@ async function tokenRoute(request, env, key) {
   await ensureSchema(env.DB);
   if (key === 'GET /api/autofix/config') return json({ autofix_enabled: (await getSettings(env.DB)).autofix_enabled });
   const b = await request.json().catch(() => null);
-  const r = key === 'POST /api/events' ? await ingestEvent(env, b) : await ingestAutofix(env, b);
+  const r = key === 'POST /api/events' ? await ingestEvent(env, b)
+    : key === 'POST /api/autofix/feedback' ? await triageFeedback(env, b)
+    : await ingestAutofix(env, b);
   return json(r.body, r.status);
 }
 
@@ -103,9 +110,10 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    const job = controller.cron === BACKUP_CRON
-      ? runBackups(env, { nowMs: controller.scheduledTime || Date.now() })
-      : runMonitor(env, { nowMs: controller.scheduledTime || Date.now() });
+    const nowMs = controller.scheduledTime || Date.now();
+    const job = controller.cron === BACKUP_CRON ? runBackups(env, { nowMs })
+      : controller.cron === AUTOFIX_CRON ? runAutofix(env, { nowMs })
+      : runMonitor(env, { nowMs });
     ctx.waitUntil(job.then((r) => console.log('cron', controller.cron, JSON.stringify(r && (r.results ? { ok: r.ok, failed: r.failed, deleted: r.deleted } : r))))
       .catch((e) => { console.error('cron failed', controller.cron, e && e.stack); throw e; }));
   },

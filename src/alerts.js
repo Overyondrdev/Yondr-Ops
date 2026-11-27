@@ -16,10 +16,10 @@ export const EVENTS = {
   usage_limit: { label: 'Usage near the free limit', severity: 'warning', help: 'Daily usage of Workers, D1 or Workers AI passed 70 % (warning) or 90 % (high) of the free plan.' },
   backup_failed: { label: 'Backup failed', severity: 'high', help: 'A nightly database backup did not complete.' },
   backup_ok_weekly_digest: { label: 'Weekly backup summary', severity: 'info', help: 'Every Monday: which backups ran last week.' },
-  autofix_started: { label: 'Auto-fix started', severity: 'info', help: 'The auto-fix engine started work on a feedback item.' },
-  autofix_merged: { label: 'Auto-fix merged', severity: 'info', help: 'An automatic fix was merged and is going live.' },
+  autofix_started: { label: 'Auto-fix started', severity: 'info', help: 'An objective bug was handed to the auto-fix engine (a GitHub issue was opened for it).' },
+  autofix_merged: { label: 'Auto-fix merged', severity: 'info', help: 'An automatic fix is live and verified: its deploy succeeded and the site stayed fine for 15 minutes.' },
   autofix_failed: { label: 'Auto-fix failed', severity: 'high', help: 'An automatic fix failed (checks failed or the engine gave up).' },
-  autofix_reverted: { label: 'Auto-fix reverted', severity: 'warning', help: 'Someone asked for an automatic fix to be undone.' },
+  autofix_reverted: { label: 'Auto-fix reverted', severity: 'warning', help: 'An automatic fix is being undone: by an admin, or automatically because its deploy or the site failed.' },
   feedback_critical: { label: 'Critical feedback', severity: 'high', help: 'Someone sent feedback marked critical.' },
   daily_digest: { label: 'Daily digest', severity: 'info', help: 'Every morning: open problems, incidents and backups of the last day.' },
 };

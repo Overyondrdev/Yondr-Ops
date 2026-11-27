@@ -6,6 +6,7 @@ import { BACKUP_DATABASES, runBackups } from './backups.js';
 import { staticChecks } from './checks.js';
 import { json } from './http.js';
 import { runMonitor } from './monitor.js';
+import { reclassify } from './triage.js';
 import { getSettings, SETTINGS, setSetting, validate } from './settings.js';
 
 const audit = (db, actor, action, detail = {}) =>
@@ -223,10 +224,19 @@ export async function handleApi(request, env, ctx, route, user) {
   }
 
   if (m === 'GET' && route === 'autofix') return json({ autofixes: await listAutofixes(db, { status: new URL(request.url).searchParams.get('status') }) });
-  if (m === 'GET' && route === 'autofix/config') { const s = await getSettings(db); return json({ autofix_enabled: s.autofix_enabled }); }
+  if (m === 'GET' && route === 'autofix/config') { const s = await getSettings(db); return json({ autofix_enabled: s.autofix_enabled, autofix_max_per_hour: s.autofix_max_per_hour }); }
   if (m === 'GET' && (p = route.match(/^autofix\/(\d+)$/))) {
     const a = await getAutofix(db, Number(p[1]));
     return a ? json({ autofix: a }) : json({ error: 'No such auto-fix.' }, 404);
+  }
+  if (m === 'GET' && (p = route.match(/^autofix\/by-feedback\/(\d+)$/))) {
+    const a = await db.prepare('SELECT id FROM autofixes WHERE feedback_id = ? ORDER BY id DESC LIMIT 1').bind(Number(p[1])).first();
+    return a ? json({ autofix: await getAutofix(db, a.id) }) : json({ error: 'Ops has nothing for this feedback item yet.' }, 404);
+  }
+  if (m === 'POST' && (p = route.match(/^autofix\/(\d+)\/classify$/))) {
+    const b = await body(request);
+    const r = await reclassify(env, Number(p[1]), b.classification, me);
+    return json(r.body, r.status);
   }
   if (m === 'POST' && (p = route.match(/^autofix\/(\d+)\/revert$/))) {
     const r = await revertAutofix(env, Number(p[1]), me);

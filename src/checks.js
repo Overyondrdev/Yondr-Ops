@@ -81,6 +81,43 @@ export const ALLOWED_REPOS = [
   'Overyondrdev/yondr-ops',
 ];
 
+// ---------------------------------------------------------------------------------------------------------------
+// 5. Auto-fix (README "Auto-fix"). Which repository fixes a feedback project, and how a merged fix is verified.
+// ---------------------------------------------------------------------------------------------------------------
+// Feedback `project` (as the widget sends it) -> repository. A project not listed here always goes to a person.
+export const PROJECT_REPOS = {
+  v1: 'Overyondrdev/overyondr-website-v1',
+  portal: 'Overyondrdev/overyondr-website-v1',
+  v2: 'Overyondrdev/overyondr-website-v2',
+  ads: 'Overyondrdev/digital-ads-portal',
+  requests: 'Overyondrdev/marketing-request-portal',
+  cards: 'Overyondrdev/christmass-cards',
+  feedback: 'Overyondrdev/yondr-feedback',
+  ops: 'Overyondrdev/yondr-ops',
+};
+// Per repository: does it have the auto-fix workflows (.github/workflows/autofix*.yml)? Only those get issues; the
+// others go to a person until the workflows are added there (README "Auto-fix" → "Adding a repository").
+// worker: the Workers Builds Worker whose production build of the fix is watched; gates: the GATE checks that must
+// stay fine for 15 minutes after it is live, or the fix is reverted automatically.
+export const AUTOFIX_TARGETS = {
+  'Overyondrdev/overyondr-website-v1': { workflow: true, worker: 'overyondr-website-v1', gates: ['gate:portal', 'gate:www', 'gate:v1', 'gate:v2'] },
+  'Overyondrdev/overyondr-website-v2': { workflow: true, worker: 'overyondr-website-v2', gates: ['gate:v2'] },
+  'Overyondrdev/digital-ads-portal': { workflow: false, worker: 'yondr-ad-portal', gates: ['gate:ads'] },
+  'Overyondrdev/christmass-cards': { workflow: false, worker: 'yondr-christmas-cards', gates: ['gate:cards'] },
+  'Overyondrdev/marketing-request-portal': { workflow: false, worker: null, gates: ['gate:requests'] },
+  'Overyondrdev/yondr-feedback': { workflow: false, worker: null, gates: ['gate:feedback-admin', 'gate:feedback-widget', 'gate:feedback-api'] },
+  'Overyondrdev/yondr-ops': { workflow: false, worker: null, gates: [] },
+};
+export const AUTOFIX = {
+  verifyMinutes: 15,        // a live fix must stay clean this long before it counts as verified
+  buildWaitMinutes: 45,     // no production build of the fix after this long = deploy not confirmed (site checks only)
+  engineTimeoutMinutes: 180, // an issue with no pull request after this long = the engine gave up
+  hardCapPerHour: 10,       // absolute ceiling on issues per hour, critical ones included
+  perRun: 3,                // issues opened per 5-minute run at most (subrequest budget)
+  watchPerRun: 6,           // pull requests / builds looked up per run at most
+  maxAttempts: 3,           // failed attempts to open an issue before giving up
+};
+
 /** Every check id the dashboard should show, with its label (Cloudflare ones appear once they've run). */
 export function staticChecks() {
   return [

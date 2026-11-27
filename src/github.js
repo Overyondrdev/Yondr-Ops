@@ -63,7 +63,7 @@ export function revertTreeEntries(files, parentTree) {
   return out;
 }
 
-async function gh(env, method, path, body) {
+export async function gh(env, method, path, body) {
   const res = await fetch(API + path, {
     method,
     headers: {
