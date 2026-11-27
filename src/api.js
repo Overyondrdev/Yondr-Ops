@@ -54,12 +54,18 @@ async function status(env) {
 
 // ---------------------------------------------------------------------------------------------------- people & rules
 /** Validate a person's settings. Returns { fields, rules } or { error }. Pure (exported for tests). */
-export function validateSubscriber(b, env, { creating }) {
+export function validateSubscriber(b, env, { creating, owner = false }) {
   const f = {};
   if (creating || b.email !== undefined) {
     const email = String(b.email || '').trim().toLowerCase();
     const domains = String(env.ALLOWED_EMAIL_DOMAINS || 'overyondr.com').split(',').map((d) => d.trim()).filter(Boolean);
-    if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email) || !domains.includes(email.split('@')[1])) return { error: `Use a work address ending in @${domains.join(' or @')}.` };
+    if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) return { error: 'Enter a valid email address.' };
+    // Outside addresses (e.g. a personal inbox while company mail filtering is being set up) are allowed for alert
+    // emails only, and only owners can add them. They never get sign-in or any access: sign-in stays @overyondr.com.
+    if (!domains.includes(email.split('@')[1])) {
+      if (!owner) return { error: `Use a work address ending in @${domains.join(' or @')}. Only owners can add an outside address for alerts.` };
+      f.external = true;
+    }
     f.email = email;
   }
   if (b.name !== undefined) f.name = String(b.name || '').trim().slice(0, 80) || null;
@@ -165,15 +171,17 @@ export async function handleApi(request, env, ctx, route, user) {
 
   if (m === 'GET' && route === 'people') return people(env);
   if (m === 'POST' && route === 'people') {
-    const v = validateSubscriber(await body(request), env, { creating: true });
+    const v = validateSubscriber(await body(request), env, { creating: true, owner });
     if (v.error) return json({ error: v.error }, 422);
+    const external = !!v.fields.external;
+    delete v.fields.external;
     if (await db.prepare('SELECT id FROM subscribers WHERE email = ?').bind(v.fields.email).first()) return json({ error: 'This person is already on the list.' }, 409);
     const now = new Date().toISOString();
     const f = { min_severity: 'all', timezone: 'UTC', active: 1, ...v.fields };
     const row = await db.prepare(`INSERT INTO subscribers (email, name, active, min_severity, quiet_start, quiet_end, timezone, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(f.email, f.name ?? null, f.active, f.min_severity, f.quiet_start ?? null, f.quiet_end ?? null, f.timezone, me, now, now).first();
     await saveRules(db, row.id, v.rules);
-    await audit(db, me, 'person.add', { email: f.email, rules: v.rules.length });
+    await audit(db, me, 'person.add', { email: f.email, rules: v.rules.length, external });
     return json({ ok: true, id: row.id }, 201);
   }
   if ((p = route.match(/^people\/(\d+)$/))) {
@@ -181,9 +189,10 @@ export async function handleApi(request, env, ctx, route, user) {
     const prev = await db.prepare('SELECT * FROM subscribers WHERE id = ?').bind(id).first();
     if (!prev) return json({ error: 'No such person.' }, 404);
     if (m === 'PATCH') {
-      const v = validateSubscriber(await body(request), env, { creating: false });
+      const v = validateSubscriber(await body(request), env, { creating: false, owner });
       if (v.error) return json({ error: v.error }, 422);
       delete v.fields.email; // a different address is a different person
+      delete v.fields.external;
       const keys = Object.keys(v.fields);
       if (keys.length) await db.prepare(`UPDATE subscribers SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).bind(...keys.map((k) => v.fields[k]), new Date().toISOString(), id).run();
       await saveRules(db, id, v.rules);
