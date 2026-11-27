@@ -2,11 +2,16 @@
 (function () {
   'use strict';
   var app = document.getElementById('app');
-  var VIEWS = [['status', 'Status'], ['incidents', 'Incidents'], ['alerts', 'Alerts'], ['backups', 'Backups'], ['autofix', 'Auto-fixes'], ['settings', 'Settings']];
+  // Left navigation (admins). 'incidents' is reachable from Overview and Sites & checks (and alert links).
+  var VIEWS = [['overview', 'Overview'], ['issues', 'Issues'], ['status', 'Status'], ['checks', 'Sites & checks'], ['errors', 'Errors'], ['deploys', 'Deploys'],
+    ['autofix', 'Auto-fixes'], ['backups', 'Backups'], ['people', 'People & permissions'], ['keys', 'Keys'], ['alerts', 'Alerts'], ['settings', 'Settings'], ['audit', 'Audit log']];
+  var PRIO = { low: 'Low', normal: 'Normal', high: 'High', critical: 'Critical' };
+  var ISSUE_ST = { open: 'Open', in_progress: 'In progress', blocked: 'Blocked', resolved: 'Resolved', wont_fix: 'Won\'t fix' };
+  var SOURCES = { manual: 'Manual', incident: 'Incident', feedback: 'Feedback', autofix: 'Auto-fix', deploy: 'Deploy', security: 'Security' };
   var SEV = { info: 'Info', warning: 'Warning', high: 'High', critical: 'Critical' };
   var AF_STATUS = { queued: 'Queued', triaged: 'Triaged', fixing: 'Fixing', pr_open: 'PR open', checks_failed: 'Checks failed', merged: 'Merged',
     deployed: 'Deployed', verified: 'Verified', failed: 'Failed', reverted: 'Reverted', rejected: 'Rejected' };
-  var S = { me: null, view: 'status', data: {}, drawer: null, afAll: false };
+  var S = { me: null, view: 'overview', data: {}, drawer: null, afAll: false, issueFilter: { status: 'active' }, directory: null, paused: false, sub: null };
 
   // ------------------------------------------------------------- helpers
   function api(path, opts) {
@@ -71,19 +76,25 @@
   }
 
   // ------------------------------------------------------------- shell
-  function go(view) { S.view = view; history.replaceState(null, '', '#' + view); load(); }
+  function go(view) { S.view = view; S.sub = null; history.replaceState(null, '', '#' + view); load().then(function () { var m = document.getElementById('main'); if (m) m.focus(); }); }
+  function isStaff() { return S.me && !S.me.role; }
   function shell(content) {
-    var nav = h('nav', { class: 'nav', 'aria-label': 'Sections' }, VIEWS.map(function (v) {
-      return h('button', { type: 'button', 'aria-current': S.view === v[0] ? 'page' : false, onclick: function () { go(v[0]); } }, [h('span', { text: v[1] })]);
+    var items = isStaff() ? [['status', 'Status']] : VIEWS;
+    var nav = h('nav', { class: 'nav', id: 'nav', 'aria-label': 'Sections' }, items.map(function (v) {
+      return h('a', { href: '#' + v[0], 'aria-current': S.view === v[0] ? 'page' : false, onclick: function (e) { e.preventDefault(); side.classList.remove('open'); menu.setAttribute('aria-expanded', 'false'); go(v[0]); } }, [v[1]]);
     }));
-    var side = h('aside', { class: 'side' }, [
-      h('a', { class: 'brand', href: '#status' }, [h('img', { src: '/brand/yondr-lichen.svg', alt: 'Yondr' }), h('span', { text: 'Ops' })]),
+    var menu = h('button', { type: 'button', class: 'btn menu', 'aria-expanded': 'false', 'aria-controls': 'nav', onclick: function () {
+      var open = !side.classList.contains('open'); side.classList.toggle('open', open); menu.setAttribute('aria-expanded', String(open));
+    } }, ['Menu']);
+    var side = h('aside', { class: 'side' + (isStaff() ? ' staff' : '') }, [
+      h('div', { class: 'top' }, [h('a', { class: 'brand', href: isStaff() ? '#status' : '#overview' }, [h('img', { src: '/brand/yondr-lichen.svg', alt: 'Yondr' }), h('span', { text: 'Ops' })]), isStaff() ? null : menu]),
       nav, h('div', { class: 'spacer' }),
-      h('div', { class: 'me' }, [h('b', { text: S.me.email }), h('span', { text: S.me.role === 'owner' ? 'Owner' : 'Admin' }),
+      h('div', { class: 'me' }, [h('b', { text: S.me.email }), h('span', { text: S.me.role === 'owner' ? 'Owner' : S.me.role === 'admin' ? 'Admin' : 'Staff' }),
         h('a', { href: 'https://auth.overyondrdev.com/logout?return=' + encodeURIComponent(location.origin + '/') }, ['Sign out'])]),
     ]);
+    var skip = h('a', { class: 'skip', href: '#main', onclick: function (e) { e.preventDefault(); document.getElementById('main').focus(); } }, ['Skip to content']);
     var main = h('main', { class: 'main', id: 'main', tabindex: '-1' }, [content]);
-    app.replaceChildren(h('div', { class: 'app' }, [side, main]));
+    app.replaceChildren(skip, h('div', { class: 'app' }, [side, main]));
   }
   function head(title, sub, actions) {
     return h('div', { class: 'page-head' }, [h('div', {}, [h('h1', { text: title }), sub ? h('p', { text: sub }) : null]), actions ? h('div', { class: 'inline' }, actions) : null]);
@@ -97,11 +108,12 @@
     if (s.status === 'ok') return 'green';
     return s.severity === 'warning' || s.severity === 'info' ? 'amber' : 'red';
   }
-  function viewStatus(d) {
+  function viewChecks(d) {
     var checks = d.checks;
     var failing = checks.filter(function (c) { return c.state && c.state.status === 'fail'; });
     var ok = checks.filter(function (c) { return c.state && c.state.status === 'ok'; });
-    var parts = [head('Status', 'Every site and setting ops watches. Checks run every 5 minutes.', [
+    var parts = [head('Sites & checks', 'Every site and setting ops watches. Checks run every 5 minutes.', [
+      h('a', { class: 'btn', href: '#incidents' }, ['Incidents']),
       btn('Run checks now', function (e) { e.target.disabled = true; api('checks/run', { method: 'POST' }).then(function () { toast('Checks finished'); load(); }).catch(function (er) { e.target.disabled = false; fail(er); }); }, 'primary'),
     ])];
     var off = Object.keys(d.switches).filter(function (k) { return k !== 'autofix_enabled' && !d.switches[k]; });
@@ -111,7 +123,7 @@
       kpi(failing.length, 'Problems now', failing.length > 0), kpi(ok.length + ' / ' + checks.length, 'Checks passing'),
       kpi(d.open_incidents, 'Open incidents'), kpi(d.last_monitor ? ago(d.last_monitor.started_at) : 'never', 'Last check'),
     ]));
-    var groups = [['gate', 'Sites (signed-out visit)'], ['public', 'overyondr.com'], ['deploy', 'Deploys'], ['cloudflare', 'Cloudflare setup'], ['usage', 'Usage today']];
+    var groups = [['gate', 'Sites (signed-out visit)'], ['public', 'overyondr.com'], ['errors', 'Server errors (last 15 minutes)'], ['deploy', 'Deploys'], ['cloudflare', 'Cloudflare setup'], ['usage', 'Usage today']];
     groups.forEach(function (g) {
       var list = checks.filter(function (c) { return c.kind === g[0]; });
       if (!list.length) return;
@@ -160,7 +172,8 @@
         h('div', {}, [h('div', { class: 't' }, [i.title, ' ', sevPill(i.severity)]), i.detail ? h('div', { class: 'd small', text: i.detail }) : null,
           h('div', { class: 'm' }, [h('span', { text: (i.site || i.check_id) }), h('span', { text: 'Opened ' + when(i.opened_at) }),
             h('span', { text: i.resolved_at ? 'Resolved ' + when(i.resolved_at) + ' (' + dur(i.duration_s) + ')' : 'Still open' }),
-            h('span', { text: i.alerted ? 'People were alerted' : 'No alert sent (muted or switched off)' })])]),
+            h('span', { text: i.alerted ? 'People were alerted' : 'No alert sent (muted or switched off)' }),
+            i.issue_id ? h('a', { href: '#issues/' + i.issue_id }, ['Issue #' + i.issue_id]) : null])]),
         h('div', { class: 'act' }, [pill(i.resolved_at ? 'Resolved' : 'Open', i.resolved_at ? 'st-ok' : 'st-fail')]),
       ]);
     });
@@ -227,7 +240,7 @@
     var tz = h('input', { class: 'input', id: 'p-tz', value: s.timezone || 'UTC', list: 'tzs', autocomplete: 'off' });
     var tzs = h('datalist', { id: 'tzs' }, ['UTC', 'Europe/London', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'Europe/Amsterdam'].map(function (z) { return h('option', { value: z }); }));
     var active = h('input', { type: 'checkbox', id: 'p-active', checked: !!s.active });
-    var rows = p.events.map(function (e) {
+    var rows = p.events.filter(function (e) { return !e.personal; }).map(function (e) {
       var forced = s.owner && e.ownerForced;
       var em = h('input', { type: 'checkbox', 'data-ev': e.type, 'aria-label': e.label + ' by email', checked: forced || has(e.type, 'email'), disabled: forced });
       var sl = h('select', { class: 'input', 'data-ev': e.type, 'aria-label': e.label + ' to Slack' }, [h('option', { value: '', text: 'No Slack' })].concat(p.webhooks.map(function (w) { return h('option', { value: w, text: w.replace('SLACK_WEBHOOK_', '#').toLowerCase() }); })));
@@ -436,16 +449,13 @@
     };
     var secrets = Object.keys(d.secrets).map(function (k) { return h('tr', {}, [h('td', { text: k }), h('td', {}, [pill(d.secrets[k] ? 'Set' : 'Not set', d.secrets[k] ? 'st-ok' : 'st-skipped')])]); })
       .concat(d.webhooks.map(function (w) { return h('tr', {}, [h('td', { text: w }), h('td', {}, [pill('Set', 'st-ok')])]); }));
-    var audit = d.audit.map(function (a) { return h('tr', {}, [h('td', { text: when(a.created_at) }), h('td', { text: a.actor }), h('td', { text: a.action }), h('td', { class: 'small', text: a.detail === '{}' ? '' : a.detail })]); });
     return h('div', {}, [head('Settings', isOwner() ? 'Kill switches and retention. Changes are logged.' : 'Only owners can change these.'),
       h('div', { class: 'card form' }, fields.concat(isOwner() ? [h('div', {}, [btn('Save settings', save, 'primary')])] : [])),
       spendPanel(d.spend),
       h('h2', { class: 'group', text: 'Secrets and connections' }),
       h('div', { class: 'tablewrap' }, [h('table', {}, [h('tbody', {}, secrets)])]),
       h('p', { class: 'small muted', text: 'Values are never shown. Set them with `npx wrangler secret put NAME` (README "Secrets").' }),
-      h('h2', { class: 'group', text: 'Audit log' }),
-      audit.length ? h('div', { class: 'tablewrap' }, [h('table', {}, [h('thead', {}, [h('tr', {}, ['When', 'Who', 'What', 'Details'].map(function (t) { return h('th', { scope: 'col', text: t }); }))]), h('tbody', {}, audit)])])
-        : h('p', { class: 'muted', text: 'Nothing yet.' })]);
+      h('p', {}, [h('a', { href: '#audit' }, ['Audit log: every change in ops, with who and when'])])]);
   }
 
   // ------------------------------------------------------------- drawer
@@ -476,18 +486,447 @@
     if (!silent) { history.replaceState(null, '', '#' + S.view); if (lastFocus && lastFocus.focus) lastFocus.focus(); }
   }
 
+  // ------------------------------------------------------------- shared bits
+  function table(headers, rows, cls) {
+    return h('div', { class: 'tablewrap' }, [h('table', { class: cls || '' }, [h('thead', {}, [h('tr', {}, headers.map(function (t) { return h('th', { scope: 'col', text: t }); }))]), h('tbody', {}, rows)])]);
+  }
+  function card(title, link, kids, cls) {
+    return h('section', { class: 'card ' + (cls || '') }, [h('h2', {}, [title, link ? h('a', { class: 'more', href: link[0] }, [link[1] || 'Open', h('span', { class: 'sr', text: ': ' + title })]) : null])].concat(kids));
+  }
+  function empty(text) { return h('div', { class: 'empty', text: text }); }
+  function pct(n) { return n == null ? '—' : n + ' %'; }
+  function prioPill(p) { return h('span', { class: 'pill pr-' + p, text: PRIO[p] || p }); }
+  function issuePill(st) { return pill(ISSUE_ST[st] || st, st === 'resolved' ? 'st-ok' : st === 'wont_fix' ? 'st-skipped' : st === 'blocked' ? 'st-fail' : 'st-neutral'); }
+  function field(id, label, el, help) { el.id = id; return h('div', { class: 'field' }, [h('label', { for: id, text: label }), el, help ? h('small', { text: help }) : null]); }
+  function select(options, value) {
+    var el = h('select', { class: 'input' }, options.map(function (o) { return h('option', { value: o[0], text: o[1] }); }));
+    el.value = value == null ? '' : value; return el;
+  }
+  function loadDirectory() {
+    if (S.directory) return Promise.resolve(S.directory);
+    return api('directory').then(function (d) { S.directory = d; return d; });
+  }
+  // One <datalist id="people-list"> for the whole page (assignee / owner pickers), filled from the directory once.
+  function peopleList() {
+    if (!document.getElementById('people-list')) {
+      var dl = h('datalist', { id: 'people-list' });
+      document.body.appendChild(dl);
+      loadDirectory().then(function (d) { d.people.forEach(function (p) { dl.appendChild(h('option', { value: p.email, text: p.name || p.email })); }); }).catch(function () {});
+    }
+    return null;
+  }
+  function stateDot(st) { return { ok: 'green', up: 'green', fail: 'red', down: 'red', degraded: 'amber', unknown: 'grey' }[st] || 'grey'; }
+  function stateLabel(st) { return { ok: 'Working', up: 'Working', fail: 'Problem', down: 'Down', degraded: 'Not quite right', unknown: 'Not checked yet' }[st] || st; }
+
+  // ------------------------------------------------------------- Overview
+  function viewOverview(d) {
+    var failing = d.sites.filter(function (x) { return x.status === 'fail'; }).length;
+    var parts = [head('Overview', 'Everything at a glance. Each card links to its page. Updates every minute.')];
+    if (!d.cloudflare_token) parts.push(h('div', { class: 'banner', text: 'CF_API_TOKEN is not set: deploys, server errors, setup gaps and Access seats can\'t be read.' }));
+    parts.push(h('div', { class: 'grid kpis' }, [
+      kpi(failing, 'Sites with a problem', failing > 0), kpi(d.incidents.open == null ? '—' : d.incidents.open, 'Open incidents'),
+      kpi(d.issues.total == null ? '—' : d.issues.total, 'Open issues', (d.issues.critical || 0) > 0), kpi(d.alerts.sent_24h == null ? '—' : d.alerts.sent_24h, 'Alerts sent (24 h)'),
+    ]));
+    var siteRows = d.sites.map(function (x) {
+      return h('tr', {}, [h('td', {}, [h('span', { class: 'dot ' + stateDot(x.status), role: 'img', 'aria-label': stateLabel(x.status) }), ' ', h('a', { href: '#checks' }, [x.label])]),
+        h('td', { text: x.last_deploy ? ago(x.last_deploy) : '—' }),
+        h('td', {}, [x.deploy_result ? pill(x.deploy_result === 'regression' ? 'Worse after deploy' : x.deploy_result === 'failed' ? 'Failed' : x.deploy_result === 'watching' ? 'Watching' : 'OK',
+          x.deploy_result === 'ok' || x.deploy_result === 'baseline' ? 'st-ok' : x.deploy_result === 'watching' ? 'st-neutral' : 'st-fail') : h('span', { class: 'muted', text: '—' })]),
+        h('td', { class: 'num', text: pct(x.error_rate_24h) })]);
+    });
+    var sites = card('Sites', ['#checks', 'Sites & checks'], [table(['Site', 'Last deploy', 'Result', 'Errors 24 h'], siteRows)], 'wide');
+    var inc = d.incidents.error ? [h('p', { class: 'muted', text: d.incidents.error })] : d.incidents.list.length ? [h('ul', { class: 'plain' }, d.incidents.list.slice(0, 5).map(function (i) {
+      return h('li', {}, [sevPill(i.severity), ' ', i.title, h('span', { class: 'muted small', text: ' · ' + ago(i.opened_at) })]); }))] : [h('p', { class: 'ok-text', text: 'No open incidents.' })];
+    var iss = d.issues.error ? [h('p', { text: d.issues.error })] : [h('div', { class: 'prio-row' }, ['critical', 'high', 'normal', 'low'].map(function (p) {
+      return h('a', { class: 'prio-box pr-' + p, href: '#issues', onclick: function (e) { e.preventDefault(); S.issueFilter = { status: 'active', priority: p }; go('issues'); } }, [h('b', { text: String(d.issues[p] || 0) }), h('span', { text: PRIO[p] })]); }))];
+    var af = d.autofix.error ? [h('p', { text: d.autofix.error })] : [
+      h('p', {}, [pill(d.autofix.paused ? 'Paused (budget)' : d.autofix.enabled ? 'On' : 'Off', d.autofix.paused ? 'st-fail' : d.autofix.enabled ? 'st-ok' : 'st-skipped')]),
+      h('dl', { class: 'mini' }, [h('dt', { text: 'Spent this month' }), h('dd', { text: money(d.autofix.spent) + ' of ' + money(d.autofix.budget) }), h('dt', { text: 'Forecast' }), h('dd', { text: money(d.autofix.forecast) })])];
+    var bk = d.backups.error ? [h('p', { text: d.backups.error })] : [table(['Database', 'Last good backup', 'Last drill'], d.backups.databases.map(function (b) {
+      var dr = (d.backups.drills || []).filter(function (x) { return x.db === b.db; })[0];
+      return h('tr', {}, [h('td', { text: b.db }), h('td', {}, [b.last_status === 'failed' ? pill('Failed', 'st-fail') : null, ' ', b.last_ok ? ago(b.last_ok) : 'never']),
+        h('td', {}, [dr ? pill(dr.status === 'ok' ? 'OK' : dr.status, dr.status === 'ok' ? 'st-ok' : 'st-fail') : h('span', { class: 'muted', text: 'none yet' })])]); }))];
+    var gaps = [];
+    if (d.setup.error) gaps.push(h('p', { text: d.setup.error }));
+    else {
+      d.setup.secrets.forEach(function (g) {
+        gaps.push(h('li', {}, [h('b', { text: g.worker + ': ' }), g.unknown ? h('span', { class: 'muted', text: d.setup.errors && d.setup.errors[g.worker] ? 'can\'t check (' + d.setup.errors[g.worker] + ')' : 'can\'t check without CF_API_TOKEN' })
+          : g.missing.length ? h('span', { class: 'warn-text', text: 'missing ' + g.missing.join(', ') }) : h('span', { class: 'ok-text', text: 'all secrets set' })]));
+      });
+      d.setup.other.forEach(function (o) { gaps.push(h('li', { class: 'warn-text', text: 'Missing: ' + o })); });
+      gaps = [h('ul', { class: 'plain' }, gaps)];
+    }
+    var fb = !d.feedback || d.feedback.error ? [h('p', { class: 'muted', text: d.feedback ? d.feedback.error : 'Not connected.' })] : [
+      h('p', {}, [h('b', { class: 'big', text: String(d.feedback.new_total) }), ' new this week', d.feedback.critical_open ? h('span', {}, [' · ', h('b', { class: 'warn-text', text: d.feedback.critical_open + ' critical open' })]) : ' · no critical open']),
+      h('ul', { class: 'plain small' }, d.feedback.new_this_week.map(function (r) { return h('li', { text: (r.project || '?') + ': ' + r.n }); })),
+      h('p', {}, [h('a', { href: 'https://feedback.overyondrdev.com/admin', target: '_blank', rel: 'noopener' }, ['Feedback admin'])])];
+    var keys = d.keys.error ? [h('p', { text: d.keys.error })] : [d.keys.soon.length ? h('ul', { class: 'plain' }, d.keys.soon.map(function (k) {
+      return h('li', {}, [pill(k.days_left < 0 ? 'expired' : k.days_left + ' days', k.days_left <= 14 ? 'st-fail' : 'st-neutral'), ' ', k.name, h('span', { class: 'muted small', text: ' · ' + k.location })]); }))
+      : h('p', { class: 'ok-text', text: 'Nothing expires in the next 30 days.' }), d.keys.no_date ? h('p', { class: 'small muted', text: d.keys.no_date + ' of ' + d.keys.total + ' keys have no expiry date yet.' }) : null];
+    var access = [h('dl', { class: 'mini' }, [h('dt', { text: 'Next access review' }), h('dd', { text: d.access.next_review || '—' }),
+      h('dt', { text: 'Cloudflare Access seats' }), h('dd', {}, [d.access.seats ? pill(d.access.seats.status === 'ok' ? 'None in use' : d.access.seats.status === 'fail' ? d.access.seats.title : 'Not checked', d.access.seats.status === 'ok' ? 'st-ok' : d.access.seats.status === 'fail' ? 'st-fail' : 'st-skipped') : h('span', { class: 'muted', text: 'not checked yet' })])])];
+    var ce = d.client_errors.error ? [h('p', { text: d.client_errors.error })] : d.client_errors.length ? [h('ul', { class: 'plain' }, d.client_errors.map(function (c) { return h('li', { text: c.project + ': ' + c.n + ' errors' }); }))] : [h('p', { class: 'ok-text', text: 'None reported in the last 24 hours.' })];
+    var alerts = [h('p', {}, [h('b', { class: 'big', text: String(d.alerts.sent_24h || 0) }), ' sent in 24 hours', d.alerts.failed_24h ? h('span', { class: 'warn-text', text: ' · ' + d.alerts.failed_24h + ' failed' }) : null])];
+    parts.push(h('div', { class: 'grid cards' }, [sites,
+      card('Open incidents', ['#incidents', 'Incidents'], inc), card('Open issues', ['#issues', 'Issues'], iss), card('Auto-fix', ['#autofix', 'Auto-fixes'], af),
+      card('Backups & drills', ['#backups', 'Backups'], bk, 'wide'), card('Setup gaps', ['#settings', 'Settings'], gaps), card('Feedback', null, fb),
+      card('Keys expiring', ['#keys', 'Keys'], keys), card('Access', ['#people/review', 'Access review'], access), card('Browser errors', ['#errors', 'Errors'], ce),
+      card('Alerts', ['#alerts', 'Alerts'], alerts)]));
+    parts.push(h('p', { class: 'small muted', text: 'Generated ' + when(d.generated_at) + '. Cloudflare answers are cached for 5 minutes.' }));
+    return h('div', {}, parts);
+  }
+
+  // ------------------------------------------------------------- Issues
+  function viewIssues(d) {
+    var f = S.issueFilter;
+    var st = select([['active', 'Open, in progress, blocked'], ['', 'All']].concat(Object.keys(ISSUE_ST).map(function (k) { return [k, ISSUE_ST[k]]; })), f.status || '');
+    var pr = select([['', 'Any priority']].concat(Object.keys(PRIO).map(function (k) { return [k, PRIO[k]]; })), f.priority || '');
+    var src = select([['', 'Any source']].concat(Object.keys(SOURCES).map(function (k) { return [k, SOURCES[k]]; })), f.source || '');
+    var who = h('input', { class: 'input', type: 'text', list: 'people-list', value: f.assignee || '', placeholder: 'anyone, none or an email', autocomplete: 'off' });
+    var site = h('input', { class: 'input', type: 'text', value: f.site || '', placeholder: 'any' });
+    var qq = h('input', { class: 'input', type: 'search', value: f.q || '', placeholder: 'words in title or text' });
+    var form = h('form', { class: 'card filters', 'aria-label': 'Filter issues', onsubmit: function (e) {
+      e.preventDefault();
+      S.issueFilter = { status: st.value, priority: pr.value, source: src.value, assignee: who.value.trim(), site: site.value.trim(), q: qq.value.trim() };
+      load();
+    } }, [h('div', { class: 'inline' }, [field('f-status', 'Status', st), field('f-prio', 'Priority', pr), field('f-source', 'Source', src), field('f-who', 'Assignee', who), field('f-site', 'Site', site), field('f-q', 'Search', qq),
+      h('button', { type: 'submit', class: 'btn' }, ['Filter'])]), peopleList()]);
+    var rows = d.issues.map(function (i) {
+      return h('button', { type: 'button', class: 'row click', onclick: function () { openIssue(i.id); } }, [
+        h('span', { class: 'dot ' + (i.status === 'resolved' || i.status === 'wont_fix' ? 'grey' : i.priority === 'critical' || i.priority === 'high' ? 'red' : 'amber'), 'aria-hidden': 'true' }),
+        h('div', {}, [h('div', { class: 't' }, ['#' + i.id + ' ' + i.title, ' ', prioPill(i.priority)]),
+          h('div', { class: 'm' }, [h('span', { text: SOURCES[i.source] || i.source }), i.site ? h('span', { text: i.site }) : null, h('span', { text: i.assignee_email ? 'Assigned to ' + i.assignee_email : 'Not assigned' }),
+            i.due_at ? h('span', { text: 'Due ' + i.due_at }) : null, h('span', { text: 'Updated ' + ago(i.updated_at) })])]),
+        h('div', { class: 'act' }, [issuePill(i.status)])]);
+    });
+    return h('div', {}, [head('Issues', 'Everything that needs a person: opened by hand, from feedback, or automatically for incidents, failed deploys and auto-fixes.', [
+      btn('From feedback item', fromFeedbackDialog), btn('New issue', newIssueDialog, 'primary')]),
+      form, rows.length ? h('div', { class: 'list' }, rows) : empty('No issues match. Good news, probably.')]);
+  }
+  function newIssueDialog() {
+    var title = h('input', { class: 'input', maxlength: '200', required: true });
+    var desc = h('textarea', { class: 'input', maxlength: '8000' });
+    var prio = select(Object.keys(PRIO).map(function (k) { return [k, PRIO[k]]; }), 'normal');
+    var who = h('input', { class: 'input', type: 'email', list: 'people-list', autocomplete: 'off', placeholder: 'name@overyondr.com' });
+    var due = h('input', { class: 'input', type: 'date' });
+    var site = h('input', { class: 'input', maxlength: '100', placeholder: 'e.g. Website V1' });
+    dialog('New issue', h('div', { class: 'form' }, [field('n-title', 'Title', title), field('n-desc', 'What\'s wrong / what to do', desc),
+      h('div', { class: 'inline' }, [field('n-prio', 'Priority', prio), field('n-due', 'Due (optional)', due)]),
+      field('n-who', 'Assign to (optional)', who, 'They get an email straight away.'), field('n-site', 'Site (optional)', site), peopleList()]), 'Create', function () {
+      if (!title.value.trim()) { title.focus(); toast('Give it a title'); return false; }
+      return api('issues', { method: 'POST', body: { title: title.value, description: desc.value, priority: prio.value, assignee_email: who.value || null, due_at: due.value || null, site: site.value || null } })
+        .then(function (r) { toast('Issue #' + r.issue.id + ' created'); return load().then(function () { showIssue(r.issue); }); });
+    });
+  }
+  function fromFeedbackDialog() {
+    var n = h('input', { class: 'input', type: 'number', min: '1', step: '1', inputmode: 'numeric' });
+    dialog('Create an issue from a feedback item', h('div', { class: 'form' }, [field('ff-id', 'Feedback item number', n, 'Copies only the item\'s title and text (personal details removed), its project and priority, and links to it.')]), 'Create', function () {
+      if (!(Number(n.value) > 0)) { n.focus(); toast('Enter the item number'); return false; }
+      return api('issues/from-feedback', { method: 'POST', body: { feedback_id: Number(n.value) } }).then(function (r) { toast('Issue #' + r.issue.id + ' created'); return load().then(function () { showIssue(r.issue); }); });
+    });
+  }
+  function openIssue(id) { api('issues/' + id).then(function (r) { showIssue(r.issue); }).catch(fail); }
+  function showIssue(i) {
+    history.replaceState(null, '', '#issues/' + i.id);
+    var st = select(Object.keys(ISSUE_ST).map(function (k) { return [k, ISSUE_ST[k]]; }), i.status);
+    var pr = select(Object.keys(PRIO).map(function (k) { return [k, PRIO[k]]; }), i.priority);
+    var who = h('input', { class: 'input', type: 'email', list: 'people-list', value: i.assignee_email || '', autocomplete: 'off', placeholder: 'Not assigned' });
+    var due = h('input', { class: 'input', type: 'date', value: i.due_at || '' });
+    var save = function () {
+      return api('issues/' + i.id, { method: 'PATCH', body: { status: st.value, priority: pr.value, assignee_email: who.value.trim() || null, due_at: due.value || null } })
+        .then(function (r) { toast('Saved'); load(); showIssue(r.issue); }).catch(fail);
+    };
+    var comment = h('textarea', { class: 'input', maxlength: '4000' });
+    var addComment = function () {
+      if (!comment.value.trim()) { comment.focus(); return; }
+      api('issues/' + i.id + '/comments', { method: 'POST', body: { body: comment.value } }).then(function (r) { toast('Comment added'); showIssue(r.issue); }).catch(fail);
+    };
+    var ref = i.source_ref || '';
+    var refLink = /^feedback:(\d+)/.test(ref) ? h('a', { href: 'https://feedback.overyondrdev.com/admin#item-' + ref.split(':')[1], target: '_blank', rel: 'noopener' }, ['Feedback #' + ref.split(':')[1]])
+      : /^autofix:(\d+)/.test(ref) ? h('a', { href: '#autofix/' + ref.split(':')[1] }, ['Auto-fix #' + ref.split(':')[1]])
+      : /^deploy:([^:]+)/.test(ref) ? h('a', { href: '#deploys/' + ref.split(':')[1] }, ['Deploys of ' + ref.split(':')[1]])
+      : /^check:/.test(ref) ? h('a', { href: '#incidents' }, ['Incidents']) : (ref || '—');
+    var content = h('div', { class: 'form' }, [
+      h('div', { class: 'links' }, [issuePill(i.status), prioPill(i.priority), pill(SOURCES[i.source] || i.source)]),
+      h('dl', { class: 'kv' }, [h('dt', { text: 'Linked to' }), h('dd', {}, [refLink]), h('dt', { text: 'Site' }), h('dd', { text: i.site || '—' }),
+        h('dt', { text: 'Created' }), h('dd', { text: when(i.created_at) + ' by ' + i.created_by }), i.resolved_at ? h('dt', { text: 'Resolved' }) : null, i.resolved_at ? h('dd', { text: when(i.resolved_at) }) : null]),
+      i.description ? h('div', { class: 'card desc', text: i.description }) : null,
+      h('div', { class: 'inline' }, [field('i-st', 'Status', st), field('i-pr', 'Priority', pr), field('i-due', 'Due', due)]),
+      field('i-who', 'Assignee', who, 'Anyone in People & permissions. They get an email.'), peopleList(),
+      h('div', {}, [btn('Save changes', save, 'primary')]),
+      h('h3', { class: 'group', text: 'Timeline' }),
+      h('ol', { class: 'timeline' }, i.events.map(function (e) { return h('li', {}, [h('div', {}, [h('div', { class: e.kind === 'comment' ? 'comment' : '', text: e.message }), h('div', { class: 'who', text: when(e.created_at) + ' · ' + e.actor + ' · ' + e.kind })])]); })),
+      field('i-comment', 'Add a comment', comment), h('div', {}, [btn('Comment', addComment)]),
+    ]);
+    openDrawer('#' + i.id + ' ' + i.title, content);
+  }
+
+  // ------------------------------------------------------------- Status (all staff)
+  function viewStatus(d) {
+    var down = d.sites.filter(function (x) { return x.state === 'down' || x.state === 'degraded'; });
+    var pause = btn(S.paused ? 'Resume auto-refresh' : 'Pause auto-refresh', function () { S.paused = !S.paused; pause.textContent = S.paused ? 'Resume auto-refresh' : 'Pause auto-refresh'; });
+    var rows = d.sites.map(function (x) {
+      return h('tr', {}, [h('th', { scope: 'row' }, [h('span', { class: 'dot ' + stateDot(x.state), 'aria-hidden': 'true' }), ' ', x.site]),
+        h('td', { text: stateLabel(x.state) }), h('td', { class: 'num', text: pct(x.uptime_7d) }), h('td', { class: 'num', text: pct(x.uptime_30d) })]);
+    });
+    var inc = d.incidents.map(function (i) { return h('li', { class: i.open ? 'open' : '' }, [h('b', { text: i.text }), h('span', { class: 'muted small', text: ' ' + (i.open ? 'Since ' + when(i.opened_at) : 'Fixed ' + when(i.resolved_at)) })]); });
+    return h('div', { class: 'status-page' }, [head('Status', 'Is everything working? Checked every 5 minutes; this page refreshes every minute.', [pause]),
+      h('div', { class: 'banner ' + (down.length ? 'red' : 'green'), role: 'status' }, [down.length ? down.length + ' site' + (down.length > 1 ? 's have' : ' has') + ' a problem. The team has been alerted.' : 'All sites are working.']),
+      table(['Site', 'Now', 'Uptime 7 days', 'Uptime 30 days'], rows, 'status-table'),
+      h('h2', { class: 'group', text: 'Incidents (last 7 days)' }),
+      inc.length ? h('ul', { class: 'plain incidents' }, inc) : h('p', { class: 'muted', text: 'None.' }),
+      h('p', { class: 'small muted', text: 'Last checked ' + (d.updated_at ? when(d.updated_at) + ' (' + ago(d.updated_at) + ')' : 'never') + '.' })]);
+  }
+
+  // ------------------------------------------------------------- Errors
+  function sparkline(hourly, label) {
+    var NS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 96 24'); svg.setAttribute('class', 'spark'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', label);
+    var max = Math.max.apply(null, [1].concat(hourly.map(function (x) { return x.errors; })));
+    hourly.slice(-24).forEach(function (x, i) {
+      var r = document.createElementNS(NS, 'rect'); var hgt = Math.max(1, Math.round((x.errors / max) * 22));
+      r.setAttribute('x', String(i * 4)); r.setAttribute('y', String(24 - hgt)); r.setAttribute('width', '3'); r.setAttribute('height', String(hgt));
+      r.setAttribute('class', x.errors ? 'bar-err' : 'bar-ok'); svg.appendChild(r);
+    });
+    return svg;
+  }
+  function viewErrors(d) {
+    var t = d.thresholds;
+    var rows = d.workers.map(function (w) {
+      var bad = w.requests_1h >= t.minRequests && w.rate_1h > t.warnPct;
+      return h('tr', {}, [h('th', { scope: 'row' }, [w.label, h('div', { class: 'small muted', text: w.worker })]), h('td', { class: 'num', text: String(w.requests_1h) }), h('td', { class: 'num', text: String(w.errors_1h) }),
+        h('td', { class: 'num' }, [bad ? pill(w.rate_1h + ' %', 'st-fail') : pct(w.rate_1h)]), h('td', { class: 'num', text: pct(w.rate_24h) + ' (' + w.errors_24h + ')' }),
+        h('td', {}, [w.hourly.length ? sparkline(w.hourly, 'Errors per hour, last 24 hours: ' + w.hourly.map(function (x) { return x.errors; }).join(', ')) : h('span', { class: 'muted small', text: 'no data' })])]);
+    });
+    var client = d.client.map(function (c) { return h('tr', {}, [h('td', { text: c.project }), h('td', { class: 'num', text: String(c.count_24h) }), h('td', { text: ago(c.last) })]); });
+    var samples = [];
+    d.client_recent.forEach(function (r) { r.sample.forEach(function (x) { samples.push(h('tr', {}, [h('td', { text: when(r.received_at) }), h('td', { text: r.project }), h('td', { class: 'code-text', text: x.message }), h('td', { class: 'code-text', text: x.source }), h('td', { text: x.page_path })])); }); });
+    return h('div', {}, [head('Errors', 'Server errors per Worker (Cloudflare analytics) and JavaScript errors in visitors\' browsers (reported by the feedback widget).'),
+      h('h2', { class: 'group', text: 'Server errors' }),
+      h('p', { class: 'small muted', text: 'Alert when more than ' + t.warnPct + ' % of requests fail in ' + t.windowMinutes + ' minutes (high above ' + t.highPct + ' %), with at least ' + t.minRequests + ' requests. "Errors" are uncaught exceptions and exceeded limits.' }),
+      table(['Worker', 'Requests 1 h', 'Errors 1 h', 'Rate 1 h', 'Rate 24 h', 'Errors per hour'], rows),
+      h('h2', { class: 'group', text: 'Browser errors (24 hours)' }),
+      client.length ? table(['Project', 'Errors', 'Last report'], client) : empty('No browser errors reported. (The feedback widget reports them; nothing reported can also mean it isn\'t sending yet.)'),
+      samples.length ? h('div', {}, [h('h3', { class: 'group', text: 'Recent examples' }), table(['When', 'Project', 'Message', 'Where', 'Page'], samples.slice(0, 40))]) : null]);
+  }
+
+  // ------------------------------------------------------------- Deploys
+  function viewDeploys(d) {
+    var parts = [head('Deploys', 'Recent deployments per Worker. Each new one is watched for 15 minutes; if errors go up or a site check starts failing, people are alerted.', [
+      btn('Refresh from Cloudflare', function (e) { e.target.disabled = true; api('deploys?refresh=1').then(function (r) { shell(viewDeploys(r)); }).catch(fail); })])];
+    if (!d.rollback_ready) parts.push(h('div', { class: 'banner', text: 'One-click rollback needs the CF_DEPLOY_TOKEN secret (a Cloudflare API token with Workers Scripts: Edit; README "Secrets"). Until then, roll back in the Cloudflare dashboard.' }));
+    d.workers.forEach(function (w) {
+      var rows = w.deployments.map(function (dep) {
+        var v = dep.versions.map(function (x) { return x.version_id.slice(0, 8) + (x.percentage !== 100 ? ' (' + x.percentage + ' %)' : ''); }).join(', ');
+        return h('tr', {}, [h('td', { text: when(dep.created_on) }), h('td', { text: dep.source || '—' }), h('td', { text: dep.author || dep.triggered_by || '—' }), h('td', { class: 'code-text', text: v }), h('td', { text: dep.message || '' })]);
+      });
+      var watches = w.watches.filter(function (x) { return x.status !== 'baseline'; }).slice(0, 3).map(function (x) {
+        return h('li', {}, [pill(x.status === 'ok' ? 'Fine after deploy' : x.status === 'watching' ? 'Watching' : 'Worse after deploy', x.status === 'ok' ? 'st-ok' : x.status === 'watching' ? 'st-neutral' : 'st-fail'), ' ', when(x.deployed_at), x.detail ? h('span', { class: 'small muted', text: ' · ' + x.detail }) : null]);
+      });
+      var canRoll = isOwner() && d.rollback_ready && w.previous_version;
+      parts.push(h('section', { class: 'card deploy', id: 'deploy-' + w.worker, tabindex: '-1', 'aria-labelledby': 'dh-' + w.worker }, [
+        h('h2', { id: 'dh-' + w.worker }, [w.label, h('small', { text: w.worker })]),
+        w.error ? h('p', { class: 'warn-text small', text: w.error }) : null,
+        watches.length ? h('ul', { class: 'plain' }, watches) : null,
+        rows.length ? table(['When', 'Source', 'Who', 'Version', 'Message'], rows) : h('p', { class: 'muted', text: w.error ? '' : 'No deployments found.' }),
+        h('p', { class: 'inline' }, [w.current_version ? h('span', { class: 'small muted', text: 'Live: ' + w.current_version.slice(0, 8) + (w.previous_version ? ' · previous: ' + w.previous_version.slice(0, 8) : '') }) : null,
+          canRoll ? btn('Roll back', function () { rollbackDialog(w); }, 'danger') : h('span', { class: 'small muted', text: !isOwner() ? 'Only owners can roll back.' : !d.rollback_ready ? 'Rollback needs CF_DEPLOY_TOKEN.' : !w.previous_version ? 'No earlier version to roll back to.' : '' })]),
+      ]));
+    });
+    return h('div', {}, parts);
+  }
+  function rollbackDialog(w) {
+    dialog('Roll back ' + w.label + '?', h('div', {}, [
+      h('p', { text: 'The previous version (' + w.previous_version.slice(0, 8) + ') will serve 100 % of traffic for ' + w.worker + ', replacing ' + w.current_version.slice(0, 8) + '. Owners are told, and it is in the audit log.' }),
+      h('ul', {}, [h('li', { text: 'The next normal deploy from main replaces the rollback: fix main (or revert the change) before merging anything else.' }),
+        h('li', { text: 'Database changes (D1 migrations) are NOT rolled back. If the bad version changed the database, the old code must still work with it.' })]),
+    ]), 'Roll back now', function () {
+      return api('deploys/' + w.worker + '/rollback', { method: 'POST', body: { version_id: w.previous_version } }).then(function () { toast(w.label + ' rolled back'); load(); });
+    }, true);
+  }
+
+  // ------------------------------------------------------------- Backups: restore drills
+  function drillsSection(d) {
+    var rows = d.drills.map(function (x) {
+      return h('tr', {}, [h('td', { text: when(x.started_at) }), h('td', {}, [x.db, x.pii ? h('span', { class: 'locked', text: 'Personal data' }) : null]),
+        h('td', {}, [pill(x.status === 'ok' ? 'OK' : x.status, x.status === 'ok' ? 'st-ok' : x.status === 'running' ? 'st-neutral' : 'st-fail')]),
+        h('td', { text: x.backup_day || '—' }), h('td', { class: 'num', text: x.tables_restored == null ? '—' : x.tables_restored + ' / ' + x.tables_expected }),
+        h('td', { class: 'num', text: x.rows_restored == null ? '—' : x.rows_restored + ' / ' + x.rows_expected }), h('td', { class: 'small', text: x.detail || '' }),
+        h('td', { class: 'small', text: x.triggered_by })]);
+    });
+    return h('section', { 'aria-labelledby': 'drills-title' }, [
+      h('h2', { class: 'group', id: 'drills-title', text: 'Restore drills' }),
+      h('p', { class: 'small muted', text: 'On the 1st of each month the latest backup of every database is restored into the scratch database yondr-ops-restore-drill and its tables and rows are compared with the backup. Christmas-card data is deleted from the scratch database straight after.' }),
+      isOwner() ? h('p', {}, [btn('Run restore drill now', function (e) { e.target.disabled = true; api('drills/run', { method: 'POST' }).then(function () { toast('Restore drill started. Refresh in a minute.'); }).catch(function (er) { e.target.disabled = false; fail(er); }); })]) : null,
+      !d.ready ? h('div', { class: 'banner', text: 'The DRILL_DB binding is missing, so drills can\'t run.' }) : null,
+      rows.length ? table(['When', 'Database', 'Result', 'Backup of', 'Tables', 'Rows', 'Detail', 'By'], rows) : empty('No restore drill has run yet.')]);
+  }
+
+  // ------------------------------------------------------------- People & permissions
+  function roleText(r) { return r || '—'; }
+  function viewPeople(d) {
+    S.directory = d;
+    var fbAdmins = d.people.filter(function (p) { return p.roles.feedback; });
+    var email = h('input', { class: 'input', type: 'email', autocomplete: 'off', placeholder: 'name@overyondr.com' });
+    var role = select([['admin', 'Admin']].concat(isOwner() ? [['owner', 'Owner']] : []), 'admin');
+    var addForm = h('form', { class: 'card', onsubmit: function (e) {
+      e.preventDefault();
+      api('permissions/feedback-admins', { method: 'POST', body: { email: email.value, role: role.value } }).then(function () { toast('Saved in the feedback tool'); S.directory = null; load(); }).catch(fail);
+    } }, [h('h2', { text: 'Give someone admin access' }), h('div', { class: 'inline' }, [field('pa-email', 'Work email', email), field('pa-role', 'Role', role), h('button', { type: 'submit', class: 'btn primary' }, ['Save'])]),
+      h('p', { class: 'small muted', text: 'Admins can use Ops and the feedback admin; owners can also change Settings, approve spend, roll back and manage owners. Changes are made by the feedback tool with your own sign-in, so its rules apply (only owners change owners; nobody removes themselves). Logged in the audit log.' })]);
+    var adminRows = fbAdmins.map(function (p) {
+      var isOwnerRow = p.roles.feedback === 'owner';
+      return h('tr', {}, [h('th', { scope: 'row' }, [p.name || p.email, p.name ? h('div', { class: 'small muted', text: p.email }) : null]),
+        h('td', {}, [pill(isOwnerRow ? 'Owner' : 'Admin', isOwnerRow ? 'st-ok' : 'st-neutral')]), h('td', { text: p.last_seen_any ? ago(p.last_seen_any) : 'never' }),
+        h('td', {}, [h('div', { class: 'act' }, [
+          isOwner() && p.email !== S.me.email ? btn(isOwnerRow ? 'Make admin' : 'Make owner', function () { changeRole(p.email, isOwnerRow ? 'admin' : 'owner'); }) : null,
+          p.email !== S.me.email ? btn('Remove', function () { removeAdmin(p.email); }, 'danger') : null])])]);
+    });
+    var tools = d.tools;
+    var all = d.people.map(function (p) {
+      return h('tr', {}, [h('th', { scope: 'row' }, [h('button', { type: 'button', class: 'linkish', onclick: function () { openPerson2(p); } }, [p.name || p.email]), p.name ? h('div', { class: 'small muted', text: p.email }) : null]),
+        h('td', { text: roleText(p.roles.feedback) }), h('td', { text: roleText(p.roles.ads) }), h('td', { text: roleText(p.roles.requests) }),
+        h('td', { text: p.alerts ? 'yes' : '—' }), h('td', { text: p.last_seen_any ? ago(p.last_seen_any) : 'never' })]);
+    });
+    var review = d.review.map(function (p) {
+      return h('tr', {}, [h('th', { scope: 'row', text: p.name || p.email }), h('td', { text: Object.keys(p.roles).map(function (k) { return (tools[k] ? tools[k].label : k) + ': ' + p.roles[k]; }).join('; ') }),
+        h('td', { text: p.last_seen ? when(p.last_seen) : 'never' }), h('td', {}, [p.stale ? pill('Not seen for ' + d.stale_days + '+ days', 'st-fail') : pill('Active', 'st-ok')])]);
+    });
+    var srcNote = [!d.sources.ads ? 'ad library' : null, !d.sources.requests ? 'marketing requests' : null].filter(Boolean);
+    return h('div', {}, [head('People & permissions', 'Everyone with access to Yondr tools. Feedback and Ops roles can be changed here; other tools link to where they are managed.'),
+      addForm,
+      h('h2', { class: 'group', text: 'Feedback tool & Ops: owners and admins' }),
+      adminRows.length ? table(['Person', 'Role', 'Last seen', ''], adminRows) : empty('No admins found.'),
+      h('h2', { class: 'group', id: 'everyone', text: 'Everyone' }),
+      srcNote.length ? h('p', { class: 'small muted', text: 'Could not read people from: ' + srcNote.join(', ') + '.' }) : null,
+      table(['Person', 'Feedback & Ops', 'Ad library', 'Marketing requests', 'Alerts', 'Last seen'], all),
+      h('p', { class: 'small muted' }, ['Manage elsewhere: ', h('a', { href: tools.ads.manage, target: '_blank', rel: 'noopener' }, ['Ad library']), ' · ', h('a', { href: tools.requests.manage, target: '_blank', rel: 'noopener' }, ['Marketing requests']), ' · ', h('a', { href: tools.cards.manage, target: '_blank', rel: 'noopener' }, ['Christmas cards'])]),
+      h('section', { 'aria-labelledby': 'review-title', id: 'review', tabindex: '-1' }, [
+        h('h2', { class: 'group', id: 'review-title', text: 'Access review' }),
+        h('p', { class: 'small muted', text: 'Everyone with an admin-type role in any tool. People not seen for ' + d.stale_days + ' days are flagged. An issue with this list opens on the first weekday of every quarter; next: ' + (d.next_review || '—') + '.' }),
+        isOwner() ? h('p', {}, [btn('Open a review issue now', function (e) { e.target.disabled = true; api('access-review/open', { method: 'POST' }).then(function (r) { toast('Issue #' + r.issue_id + ' opened'); }).catch(fail); })]) : null,
+        review.length ? table(['Person', 'Roles', 'Last seen', ''], review) : empty('Nobody has an admin-type role.')])]);
+  }
+  function changeRole(email, role) {
+    dialog((role === 'owner' ? 'Make ' : 'Make ') + email + ' ' + role + '?', h('p', { text: role === 'owner' ? 'Owners can change Settings, approve spend, roll back deploys and manage other owners.' : 'They keep admin access but lose owner rights.' }), 'Save', function () {
+      return api('permissions/feedback-admins', { method: 'POST', body: { email: email, role: role } }).then(function () { toast('Saved'); S.directory = null; load(); });
+    });
+  }
+  function removeAdmin(email) {
+    dialog('Remove ' + email + ' as admin?', h('p', { text: 'They can no longer use Ops or the feedback admin. Their alerts (if any) continue until removed in Alerts.' }), 'Remove', function () {
+      return api('permissions/feedback-admins', { method: 'DELETE', body: { email: email } }).then(function () { toast('Removed'); S.directory = null; load(); });
+    }, true);
+  }
+  function openPerson2(p) {
+    var tools = S.directory.tools;
+    var rows = Object.keys(tools).map(function (k) {
+      var has = p.roles[k];
+      return h('li', { class: 'check-item' }, [h('b', { text: tools[k].label + ': ' }), has ? has : h('span', { class: 'muted', text: k === 'cards' ? 'not shown here' : 'no role' }),
+        p.last_seen[k] ? h('span', { class: 'small muted', text: ' · last seen ' + when(p.last_seen[k]) }) : null, ' ',
+        k === 'feedback' && has ? (p.email !== S.me.email ? btn('Remove here', function () { closeDrawer(); removeAdmin(p.email); }, 'danger') : null)
+          : h('a', { href: tools[k].manage, target: '_blank', rel: 'noopener' }, ['Manage in ' + tools[k].label])]);
+    });
+    openDrawer(p.name || p.email, h('div', { class: 'form' }, [
+      h('dl', { class: 'kv' }, [h('dt', { text: 'Email' }), h('dd', { text: p.email }), h('dt', { text: 'Last seen in Ops' }), h('dd', { text: p.last_seen.ops ? when(p.last_seen.ops) : 'never' }),
+        h('dt', { text: 'Gets alerts' }), h('dd', { text: p.alerts ? 'yes (Alerts page)' : 'no' }), h('dt', { text: 'Has issues assigned' }), h('dd', { text: p.assignee ? 'yes' : 'no' })]),
+      h('h3', { class: 'group', text: 'Remove from all tools (checklist)' }),
+      h('ul', { class: 'plain checklist' }, rows),
+      h('p', { class: 'small muted', text: 'Only Feedback & Ops roles can be changed from here. Also remove them from alerts (Alerts) and reassign their open issues.' })]));
+  }
+
+  // ------------------------------------------------------------- Keys
+  function viewKeys(d) {
+    var rows = d.keys.map(function (k) {
+      var dl = k.days_left;
+      return h('tr', {}, [h('th', { scope: 'row', text: k.name }), h('td', { text: k.location }), h('td', { text: k.owner_email || '—' }),
+        h('td', {}, [k.expires_on ? k.expires_on + ' ' : h('span', { class: 'muted', text: 'not set ' }), dl == null ? null : pill(dl < 0 ? 'expired' : dl === 0 ? 'today' : dl + ' days', dl <= 14 ? 'st-fail' : dl <= 30 ? 'st-neutral' : 'st-ok')]),
+        h('td', { text: k.last_rotated || '—' }), h('td', { class: 'small', text: k.rotation_notes || '' }), h('td', {}, [btn('Edit', function () { keyDialog(k); })])]);
+    });
+    return h('div', {}, [head('Keys', 'When each key and token expires, where it lives and who rotates it. Never the keys themselves.', [btn('Add a key', function () { keyDialog(null); }, 'primary')]),
+      h('p', { class: 'small muted', text: 'Owners (and the key\'s owner) are emailed 30 and 14 days before a key expires, and on the day.' }),
+      table(['Key', 'Where it lives', 'Owner', 'Expires', 'Last rotated', 'How to rotate', ''], rows)]);
+  }
+  function keyDialog(k) {
+    var name = h('input', { class: 'input', maxlength: '80', value: k ? k.name : '' });
+    var loc = h('input', { class: 'input', maxlength: '200', value: k ? k.location : '', placeholder: 'e.g. yondr-ops Worker secret' });
+    var owner = h('input', { class: 'input', type: 'email', list: 'people-list', value: k && k.owner_email ? k.owner_email : '', autocomplete: 'off' });
+    var exp = h('input', { class: 'input', type: 'date', value: k && k.expires_on ? k.expires_on : '' });
+    var rot = h('input', { class: 'input', type: 'date', value: k && k.last_rotated ? k.last_rotated : '' });
+    var notes = h('textarea', { class: 'input', maxlength: '1000' }); notes.value = k && k.rotation_notes ? k.rotation_notes : '';
+    var body = h('div', { class: 'form' }, [h('p', { class: 'banner', text: 'Never paste a key here. Only its name, where it lives and when it expires.' }),
+      field('k-name', 'Name', name), field('k-loc', 'Where it lives', loc), h('div', { class: 'inline' }, [field('k-exp', 'Expires on', exp), field('k-rot', 'Last rotated', rot)]),
+      field('k-owner', 'Owner (gets the reminders too)', owner), field('k-notes', 'How to rotate', notes), peopleList(),
+      k && isOwner() ? h('p', {}, [btn('Remove from the calendar', function () { api('keys/' + k.id, { method: 'DELETE' }).then(function () { toast('Removed'); document.querySelector('dialog').close(); load(); }).catch(fail); }, 'danger')]) : null]);
+    dialog(k ? 'Edit ' + k.name : 'Add a key', body, 'Save', function () {
+      var payload = { name: name.value, location: loc.value, owner_email: owner.value || null, expires_on: exp.value || null, last_rotated: rot.value || null, rotation_notes: notes.value || null };
+      return api(k ? 'keys/' + k.id : 'keys', { method: k ? 'PATCH' : 'POST', body: payload }).then(function () { toast('Saved'); load(); });
+    });
+  }
+
+  // ------------------------------------------------------------- Audit log
+  function viewAudit(d) {
+    var actor = h('input', { class: 'input', type: 'email', list: 'people-list', value: S.auditActor || '', autocomplete: 'off' });
+    var action = select([['', 'Everything'], ['permission', 'Permissions'], ['issue', 'Issues'], ['deploy', 'Rollbacks'], ['key', 'Keys'], ['settings', 'Settings'], ['autofix', 'Auto-fix'], ['backup', 'Backups'], ['drill', 'Restore drills'], ['person', 'Alert people'], ['check', 'Mutes']], S.auditAction || '');
+    var form = h('form', { class: 'card filters', 'aria-label': 'Filter the audit log', onsubmit: function (e) { e.preventDefault(); S.auditActor = actor.value.trim(); S.auditAction = action.value; load(); } },
+      [h('div', { class: 'inline' }, [field('a-actor', 'Who', actor), field('a-action', 'What', action), h('button', { type: 'submit', class: 'btn' }, ['Filter'])]), peopleList()]);
+    var rows = d.audit.map(function (a) { return h('tr', {}, [h('td', { text: when(a.created_at) }), h('td', { text: a.actor }), h('td', { text: a.action }), h('td', { class: 'small code-text', text: a.detail === '{}' ? '' : a.detail })]); });
+    return h('div', {}, [head('Audit log', 'Every change made in Ops: settings, permissions, rollbacks, keys, issues, mutes, downloads. Auto-fix steps have their own timeline.'), form,
+      rows.length ? table(['When', 'Who', 'What', 'Details'], rows) : empty('Nothing logged yet.')]);
+  }
+
   // ------------------------------------------------------------- loading
+  function qs(o) { var k = Object.keys(o).filter(function (x) { return o[x]; }); return k.length ? '?' + k.map(function (x) { return x + '=' + encodeURIComponent(o[x]); }).join('&') : ''; }
   var LOADERS = {
-    status: function () { return api('status').then(viewStatus); },
+    overview: function () { return api('overview').then(viewOverview); },
+    issues: function () { return api('issues' + qs(S.issueFilter)).then(viewIssues); },
+    status: function () { return api('status/public').then(viewStatus); },
+    checks: function () { return api('status').then(viewChecks); },
     incidents: function () { return api('incidents').then(viewIncidents); },
+    errors: function () { return api('errors').then(viewErrors); },
+    deploys: function () { return api('deploys').then(viewDeploys); },
     alerts: function () { return Promise.all([api('people'), api('alerts')]).then(function (r) { S.data.people = r[0]; return viewAlerts({ people: r[0], log: r[1] }); }); },
-    backups: function () { return api('backups').then(viewBackups); },
+    backups: function () { return Promise.all([api('backups'), api('drills')]).then(function (r) { var el = viewBackups(r[0]); el.appendChild(drillsSection(r[1])); return el; }); },
     autofix: function () { return Promise.all([api('autofix' + (S.afAll ? '' : '?status=active')), api('autofix/config'), api('autofix/spend')]).then(function (r) { return viewAutofix({ autofixes: r[0].autofixes, config: r[1], spend: r[2] }); }); },
+    people: function () { return api('directory').then(viewPeople); },
+    keys: function () { return api('keys').then(viewKeys); },
     settings: function () { return Promise.all([api('settings'), api('autofix/spend')]).then(function (r) { r[0].spend = r[1]; return viewSettings(r[0]); }); },
+    audit: function () { return api('audit' + qs({ actor: S.auditActor, action: S.auditAction })).then(viewAudit); },
   };
+  // S.view comes from the URL hash: match it against fixed names, never use it as an object key (CodeQL).
+  function loaderFor(view) {
+    switch (view) {
+      case 'issues': return LOADERS.issues;
+      case 'status': return LOADERS.status;
+      case 'checks': return LOADERS.checks;
+      case 'incidents': return LOADERS.incidents;
+      case 'errors': return LOADERS.errors;
+      case 'deploys': return LOADERS.deploys;
+      case 'alerts': return LOADERS.alerts;
+      case 'backups': return LOADERS.backups;
+      case 'autofix': return LOADERS.autofix;
+      case 'people': return LOADERS.people;
+      case 'keys': return LOADERS.keys;
+      case 'settings': return LOADERS.settings;
+      case 'audit': return LOADERS.audit;
+      default: return LOADERS.overview;
+    }
+  }
   function load() {
     var view = S.view;
-    return LOADERS[view]().then(function (el) { if (S.view === view) shell(el); }).catch(function (er) { shell(h('div', { class: 'banner red', role: 'alert', text: er.message })); });
+    return loaderFor(view)().then(function (el) { if (S.view === view) shell(el); })
+      .catch(function (er) { shell(h('div', {}, [head('Something went wrong'), h('div', { class: 'banner red', role: 'alert', text: er.message }), btn('Try again', load)])); });
+  }
+  function focusTarget(id) { var el = document.getElementById(id); if (el) { el.setAttribute('tabindex', '-1'); el.scrollIntoView(); el.focus(); } }
+  function deepLink(parts) {
+    if (parts[0] === 'autofix') {
+      if (parts[1] === 'spend') focusTarget('spend'); // link in budget alerts
+      else if (parts[1] === 'feedback' && parts[2]) openAutofixByFeedback(Number(parts[2])); // link from the feedback admin
+      else if (parts[1]) openAutofix(Number(parts[1]));
+    }
+    if (parts[0] === 'issues' && parts[1]) openIssue(Number(parts[1]));
+    if (parts[0] === 'deploys' && parts[1]) focusTarget('deploy-' + parts[1]);
+    if (parts[0] === 'people' && parts[1] === 'review') focusTarget('review');
   }
   function denied() {
     app.replaceChildren(h('div', { class: 'denied' }, [h('div', {}, [h('img', { src: '/brand/yondr-lichen.svg', alt: 'Yondr', width: '110' }),
@@ -495,22 +934,34 @@
       h('p', {}, [h('a', { href: 'https://auth.overyondrdev.com/logout?return=' + encodeURIComponent(location.origin + '/') }, ['Sign in as someone else'])])])]));
   }
 
+  function route() {
+    var parts = location.hash.replace('#', '').split('/');
+    if (location.pathname === '/status' && !parts[0]) parts = ['status'];
+    return parts;
+  }
   function start() {
-    var hash = location.hash.replace('#', '');
-    var parts = hash.split('/');
-    if (LOADERS[parts[0]]) S.view = parts[0];
+    var parts = route();
     api('me').then(function (me) {
       S.me = me;
-      if (!me.role) return denied();
+      if (!me.role) {
+        // Staff who aren't admins: the status page only.
+        if (!me.staff) return denied();
+        S.view = 'status';
+        if (location.pathname !== '/status') history.replaceState(null, '', '/status');
+      } else if (Object.prototype.hasOwnProperty.call(LOADERS, parts[0])) S.view = parts[0];
       loading();
-      return load().then(function () { if (parts[0] !== 'autofix') return;
-        if (parts[1] === 'spend') { var sp = document.getElementById('spend'); if (sp) { sp.scrollIntoView(); sp.setAttribute('tabindex', '-1'); sp.focus(); } } // link in budget alerts
-        else if (parts[1] === 'feedback' && parts[2]) openAutofixByFeedback(Number(parts[2])); // link from the feedback admin
-        else if (parts[1]) openAutofix(Number(parts[1]));
-      });
+      return load().then(function () { deepLink(parts); });
     }).catch(function (er) { app.replaceChildren(h('div', { class: 'denied' }, [h('div', {}, [h('h1', { text: 'Can\'t load' }), h('p', { text: er.message })])])); });
   }
-  window.addEventListener('hashchange', function () { var v = location.hash.replace('#', '').split('/')[0]; if (LOADERS[v] && v !== S.view) { S.view = v; load(); } });
-  setInterval(function () { if (S.view === 'status' && !S.drawer && !document.querySelector('dialog') && document.visibilityState === 'visible') load(); }, 60000);
+  window.addEventListener('hashchange', function () {
+    if (isStaff()) return;
+    var parts = route();
+    if (Object.prototype.hasOwnProperty.call(LOADERS, parts[0]) && parts[0] !== S.view) { S.view = parts[0]; load().then(function () { deepLink(parts); }); }
+    else deepLink(parts);
+  });
+  // Live views refresh every minute (not while a drawer or dialog is open, the tab is hidden, or refresh is paused).
+  setInterval(function () {
+    if (['status', 'overview', 'checks'].indexOf(S.view) >= 0 && !S.paused && !S.drawer && !document.querySelector('dialog') && document.visibilityState === 'visible' && !(document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) load();
+  }, 60000);
   start();
 })();

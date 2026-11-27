@@ -25,7 +25,9 @@ export function fakeD1(sqlite = new DatabaseSync(':memory:')) {
 export function feedbackDb(admins = []) {
   const db = fakeD1();
   db.sqlite.exec(`CREATE TABLE admins (email TEXT PRIMARY KEY, role TEXT NOT NULL DEFAULT 'admin', added_by TEXT, added_at TEXT NOT NULL);
-    CREATE TABLE feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL, created_at TEXT NOT NULL);`);
+    CREATE TABLE feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL, created_at TEXT NOT NULL, title TEXT, site TEXT, project TEXT,
+      priority TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'new', type TEXT NOT NULL DEFAULT 'bug', author_email TEXT);
+    CREATE TABLE activity (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id INTEGER, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);`);
   const ins = db.sqlite.prepare("INSERT INTO admins (email, role, added_at) VALUES (?, ?, '2026-11-01')");
   for (const [email, role] of admins) ins.run(email, role);
   return db;
@@ -84,4 +86,37 @@ export function mockFetch(t, handler) {
   globalThis.fetch = async (url, init = {}) => { calls.push({ url: String(url), init }); return handler(String(url), init); };
   t.after(() => { globalThis.fetch = orig; });
   return calls;
+}
+
+/** One request through the Worker's fetch handler as a signed-in person (CSRF header and Origin on changes). */
+export async function callWorker(env, worker, path, { method = 'GET', as = ADMIN, body, csrf = true, headers = {}, base = 'https://ops.overyondrdev.com' } = {}) {
+  const h = { ...headers };
+  if (as) h.cookie = `other=1; yondr_session=${await session(as)}`;
+  if (method !== 'GET') h.origin = base;
+  if (method !== 'GET' && csrf) h['x-yondr-ops'] = '1';
+  if (body) h['content-type'] = 'application/json';
+  const pending = [];
+  const res = await worker.fetch(new Request(base + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined }), env, { waitUntil: (p) => pending.push(p) });
+  await Promise.all(pending);
+  const type = res.headers.get('content-type') || '';
+  return { res, status: res.status, data: type.includes('json') ? await res.json() : null, text: type.includes('json') ? null : await res.text() };
+}
+
+/** Add an alert subscriber with email rules for these event types. Returns its id. */
+export function subscribe(env, email, events) {
+  const s = env.DB.sqlite.prepare("INSERT INTO subscribers (email, created_by, created_at, updated_at) VALUES (?, 'x', 'x', 'x') RETURNING id").get(email);
+  for (const e of events) env.DB.sqlite.prepare("INSERT INTO subscriptions (subscriber_id, event_type, channel, created_at) VALUES (?, ?, 'email', 'x')").run(s.id, e);
+  return s.id;
+}
+
+/** Probe answers for a monitoring run: every gate fine, except the overrides { url: response-like }. */
+export function probes(overrides = {}) {
+  return async (url) => {
+    if (overrides[url]) return overrides[url];
+    if (url === 'https://cards.overyondrdev.com/') return { status: 302, location: 'https://cards.overyondrdev.com/auth' };
+    if (url === 'https://auth.overyondrdev.com/login' || url.endsWith('/widget.js')) return { status: 200 };
+    if (url.endsWith('/api/me')) return { status: 401 };
+    if (url === 'https://overyondr.com/') return { status: 301, location: 'https://www.overyondr.com/', server: 'Squarespace' };
+    return { status: 302, location: 'https://auth.overyondrdev.com/login?return=x' };
+  };
 }

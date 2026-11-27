@@ -16,6 +16,8 @@ export const SETTINGS = {
   event_dedupe_minutes: { type: 'int', min: 1, max: 1440, default: 60, label: 'Duplicate window (minutes)', help: 'The same event from another system within this window is logged but not sent again.' },
   daily_digest_hour_utc: { type: 'int', min: 0, max: 23, default: 8, label: 'Daily digest hour (UTC)', help: 'The daily summary goes out at the first check after this hour.' },
   backup_retention_days: { type: 'int', min: 7, max: 365, default: 30, label: 'Keep daily backups (days)', help: 'Older daily backups are deleted.' },
+  restore_drill_enabled: { type: 'bool', default: true, label: 'Monthly restore drill', help: 'On the 1st of each month, after the backups, test-restore the latest backup of every database into the scratch database yondr-ops-restore-drill and compare tables and rows.' },
+  client_errors_threshold: { type: 'int', min: 1, max: 10000, default: 20, label: 'Browser errors alert (per 15 minutes)', help: 'Alert (client_errors_spike) when the feedback widget reports more JavaScript errors than this for one project in 15 minutes.' },
   backup_monthly_months: { type: 'int', min: 0, max: 36, default: 12, label: 'Keep monthly backups (months)', help: 'The backup of the 1st of each month is kept this long.' },
 };
 

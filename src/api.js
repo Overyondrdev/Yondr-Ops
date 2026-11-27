@@ -1,4 +1,5 @@
-// The dashboard API (/api/*). Every route here runs for a signed-in ADMIN only (checked in src/index.js);
+// The dashboard API (/api/*). Every route here runs for a signed-in ADMIN only (checked in src/index.js; staff who aren't
+// admins only reach GET /api/me and GET /api/status/public there);
 // owner-only routes say so. State changes carry the CSRF header (src/http.js) and are written to the audit log.
 import { availableWebhooks, DEFAULT_EVENTS, dispatch, EVENT_TYPES, EVENTS, MIN_SEVERITY, ownerEmails, validQuietTime, validTimeZone, WEBHOOK_NAME } from './alerts.js';
 import { getAutofix, listAutofixes, revertAutofix } from './autofix.js';
@@ -9,6 +10,15 @@ import { json } from './http.js';
 import { runMonitor } from './monitor.js';
 import { reclassify } from './triage.js';
 import { getSettings, SETTINGS, setSetting, validate } from './settings.js';
+import { deploysReport, rollback } from './deploys.js';
+import { runDrills } from './drill.js';
+import { errorsReport } from './errors.js';
+import { commentIssue, createIssue, getIssue, issueFromFeedback, listIssues, updateIssue, validateIssue } from './issues.js';
+import { keysReport, validateKey } from './keys.js';
+import { overview } from './overview.js';
+import { changeFeedbackAdmin, directory, reviewList, STALE_DAYS } from './people.js';
+import { maybeQuarterlyReview, nextReviewDate } from './review.js';
+import { publicStatus } from './status.js';
 
 const audit = (db, actor, action, detail = {}) =>
   db.prepare('INSERT INTO audit (actor, action, detail, created_at) VALUES (?, ?, ?, ?)').bind(actor, action, JSON.stringify(detail), new Date().toISOString()).run();
@@ -30,7 +40,7 @@ async function status(env) {
   const muteBy = new Map(mutes.map((m) => [m.check_id, m]));
   const known = staticChecks();
   const ids = new Set(known.map((c) => c.id));
-  const kindOf = (id) => (id.startsWith('build:') ? 'deploy' : id.startsWith('cf:usage') ? 'usage' : id.startsWith('cf:') ? 'cloudflare' : 'gate');
+  const kindOf = (id) => (id.startsWith('build:') ? 'deploy' : id.startsWith('cf:usage') ? 'usage' : id.startsWith('errors:') ? 'errors' : id.startsWith('cf:') ? 'cloudflare' : 'gate');
   const checks = [
     ...known,
     ...states.filter((s) => !ids.has(s.check_id)).map((s) => ({ id: s.check_id, site: s.site, kind: kindOf(s.check_id) })),
@@ -258,7 +268,8 @@ export async function handleApi(request, env, ctx, route, user) {
   if (m === 'GET' && route === 'settings') {
     const { results: auditRows } = await db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 100').all();
     return json({ settings: await getSettings(db), definitions: SETTINGS, audit: auditRows, transport_default: env.EMAIL_TRANSPORT || 'cloudflare',
-      secrets: { CF_API_TOKEN: !!env.CF_API_TOKEN, GITHUB_TOKEN: !!env.GITHUB_TOKEN, OPS_INGEST_TOKEN: !!env.OPS_INGEST_TOKEN, RESEND_API_KEY: !!env.RESEND_API_KEY, EMAIL_BINDING: !!env.EMAIL },
+      secrets: { CF_API_TOKEN: !!env.CF_API_TOKEN, CF_DEPLOY_TOKEN: !!env.CF_DEPLOY_TOKEN, GITHUB_TOKEN: !!env.GITHUB_TOKEN, OPS_INGEST_TOKEN: !!env.OPS_INGEST_TOKEN,
+        RESEND_API_KEY: !!env.RESEND_API_KEY, EMAIL_BINDING: !!env.EMAIL, DRILL_DB: !!env.DRILL_DB, FEEDBACK_SERVICE: !!env.FEEDBACK },
       webhooks: availableWebhooks(env) });
   }
   if (m === 'PATCH' && route === 'settings') {
@@ -273,6 +284,122 @@ export async function handleApi(request, env, ctx, route, user) {
     for (const [k, v] of Object.entries(changes)) await setSetting(db, k, v, me);
     await audit(db, me, 'settings.update', changes);
     return json({ ok: true, settings: await getSettings(db) });
+  }
+
+  // ------------------------------------------------------------------------------------------ v2: admin dashboard
+  const q = new URL(request.url).searchParams;
+  if (m === 'GET' && route === 'overview') return json(await overview(env));
+  if (m === 'GET' && route === 'status/public') return json(await publicStatus(db));
+
+  // Issues (src/issues.js)
+  if (m === 'GET' && route === 'issues') {
+    const filters = Object.fromEntries(['status', 'priority', 'assignee', 'source', 'site', 'q'].map((k) => [k, q.get(k) || undefined]));
+    return json({ issues: await listIssues(db, filters) });
+  }
+  if (m === 'POST' && route === 'issues') {
+    const v = validateIssue(await body(request), env, { creating: true });
+    if (v.error) return json({ error: v.error }, 422);
+    const row = await createIssue(env, { ...v.fields, source: 'manual' }, me);
+    await audit(db, me, 'issue.create', { id: row.id, priority: row.priority });
+    return json({ ok: true, issue: await getIssue(db, row.id) }, 201);
+  }
+  if (m === 'POST' && route === 'issues/from-feedback') {
+    const b = await body(request);
+    const r = await issueFromFeedback(env, b.feedback_id, me);
+    if (r.status === 201) await audit(db, me, 'issue.from_feedback', { id: r.body.issue.id, feedback_id: Number(b.feedback_id) });
+    return json(r.body, r.status);
+  }
+  if ((p = route.match(/^issues\/(\d+)$/))) {
+    if (m === 'GET') { const i = await getIssue(db, Number(p[1])); return i ? json({ issue: i }) : json({ error: 'No such issue.' }, 404); }
+    if (m === 'PATCH') { const r = await updateIssue(env, Number(p[1]), await body(request), me); return json(r.body, r.status); }
+  }
+  if (m === 'POST' && (p = route.match(/^issues\/(\d+)\/comments$/))) {
+    const r = await commentIssue(env, Number(p[1]), (await body(request)).body, me);
+    return json(r.body, r.status);
+  }
+
+  // People & permissions (src/people.js)
+  if (m === 'GET' && route === 'directory') {
+    const d = await directory(env);
+    return json({ ...d, review: reviewList(d.people), stale_days: STALE_DAYS, next_review: nextReviewDate(Date.now()), me: { email: me, role: user.role } });
+  }
+  if (route === 'permissions/feedback-admins' && (m === 'POST' || m === 'DELETE')) {
+    const r = await changeFeedbackAdmin(env, request, me, m, await body(request));
+    return json(r.body, r.status);
+  }
+  if (m === 'POST' && route === 'access-review/open') {
+    if (!owner) return ownerOnly();
+    const id = await maybeQuarterlyReview(env, { force: true });
+    await audit(db, me, 'access_review.open', { issue: id });
+    return json({ ok: true, issue_id: id }, 201);
+  }
+
+  // Errors, deploys, rollback (src/errors.js, src/deploys.js)
+  if (m === 'GET' && route === 'errors') return json(await errorsReport(db));
+  if (m === 'GET' && route === 'deploys') return json(await deploysReport(env, { force: q.get('refresh') === '1' }));
+  if (m === 'POST' && (p = route.match(/^deploys\/([a-z0-9-]{1,63})\/rollback$/))) {
+    if (!owner) return ownerOnly();
+    const b = await body(request);
+    const r = await rollback(env, p[1], me, { expectVersion: b.version_id || null });
+    return json(r.body, r.status);
+  }
+
+  // Restore drills (src/drill.js)
+  if (m === 'GET' && route === 'drills') {
+    const { results } = await db.prepare('SELECT * FROM restore_drills ORDER BY id DESC LIMIT 60').all();
+    return json({ drills: results, ready: !!env.DRILL_DB && !!env.BACKUPS });
+  }
+  if (m === 'POST' && route === 'drills/run') {
+    if (!owner) return ownerOnly();
+    if (!env.DRILL_DB) return json({ error: 'The scratch database binding DRILL_DB is missing (wrangler.jsonc).' }, 412);
+    const last = await db.prepare('SELECT started_at FROM restore_drills ORDER BY id DESC LIMIT 1').first();
+    if (last && Date.now() - Date.parse(last.started_at) < 15 * 60_000) return json({ error: 'A restore drill ran less than 15 minutes ago.' }, 429);
+    await audit(db, me, 'drill.run');
+    const job = runDrills(env, { triggeredBy: me }).catch((e) => console.error('manual drill failed', e && e.stack));
+    if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+    return json({ ok: true, started: true }, 202);
+  }
+
+  // Key-expiry calendar (src/keys.js). Never key values.
+  if (m === 'GET' && route === 'keys') return json({ keys: await keysReport(db) });
+  if (m === 'POST' && route === 'keys') {
+    const v = validateKey(await body(request), env, { creating: true });
+    if (v.error) return json({ error: v.error }, 422);
+    const f = v.fields; const now = new Date().toISOString();
+    if (await db.prepare('SELECT id FROM keys_registry WHERE name = ? AND location = ?').bind(f.name, f.location).first()) return json({ error: 'That key is already in the calendar.' }, 409);
+    const row = await db.prepare(`INSERT INTO keys_registry (name, location, owner_email, expires_on, rotation_notes, last_rotated, created_by, created_at, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(f.name, f.location, f.owner_email ?? null, f.expires_on ?? null, f.rotation_notes ?? null, f.last_rotated ?? null, me, now, me, now).first();
+    await audit(db, me, 'key.add', { id: row.id, name: f.name, location: f.location, expires_on: f.expires_on ?? null });
+    return json({ ok: true, id: row.id }, 201);
+  }
+  if ((p = route.match(/^keys\/(\d+)$/))) {
+    const id = Number(p[1]);
+    const prev = await db.prepare('SELECT * FROM keys_registry WHERE id = ?').bind(id).first();
+    if (!prev) return json({ error: 'No such key.' }, 404);
+    if (m === 'PATCH') {
+      const v = validateKey(await body(request), env, { creating: false });
+      if (v.error) return json({ error: v.error }, 422);
+      const keys = Object.keys(v.fields);
+      if (keys.length) await db.prepare(`UPDATE keys_registry SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_by = ?, updated_at = ? WHERE id = ?`).bind(...keys.map((k) => v.fields[k]), me, new Date().toISOString(), id).run();
+      await audit(db, me, 'key.update', { id, name: prev.name, fields: keys, expires_on: v.fields.expires_on });
+      return json({ ok: true });
+    }
+    if (m === 'DELETE') {
+      if (!owner) return ownerOnly();
+      await db.prepare('DELETE FROM keys_registry WHERE id = ?').bind(id).run();
+      await audit(db, me, 'key.remove', { id, name: prev.name, location: prev.location });
+      return json({ ok: true });
+    }
+  }
+
+  // Audit log
+  if (m === 'GET' && route === 'audit') {
+    const where = []; const args = [];
+    if (q.get('actor')) { where.push('actor = ?'); args.push(q.get('actor').toLowerCase()); }
+    if (q.get('action')) { where.push('action LIKE ?'); args.push(`${q.get('action')}%`); }
+    const stmt = db.prepare(`SELECT * FROM audit ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT 300`);
+    const { results } = await (args.length ? stmt.bind(...args) : stmt).all();
+    return json({ audit: results });
   }
 
   return json({ error: 'Not found' }, 404);

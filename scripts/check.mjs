@@ -49,6 +49,28 @@ for (const f of files.filter((f) => f.startsWith('src/') && f.endsWith('.js'))) 
   });
 }
 
+// 4b. Destructive SQL. DROP (tables, views, indexes, triggers) only in src/drill.js and only on the scratch database
+//     (the `drill` handle from env.DRILL_DB). DELETE only on ops' own bookkeeping tables listed here, never elsewhere.
+const DROP = /\bDROP\s+(\$\{|TABLE|VIEW|INDEX|TRIGGER)/i;
+const DELETE_OK = new Set(['subscriptions', 'subscribers', 'check_history', 'worker_error_stats', 'client_errors', 'cf_cache', 'keys_registry']);
+for (const f of files.filter((f) => f.startsWith('src/') && f.endsWith('.js') && f !== 'src/static.generated.js')) {
+  const lines = readFileSync(join(ROOT, f), 'utf8').split('\n');
+  lines.forEach((line, i) => {
+    if (/^\s*\/\//.test(line)) return;
+    if (DROP.test(line)) {
+      if (f !== 'src/drill.js') problems.push(`${f}:${i + 1}: DROP is only allowed in src/drill.js, on the scratch database DRILL_DB`);
+      else if (!/\bdrill\.prepare\(/.test(line) || /env\.(DB|FEEDBACK_DB|ADS_DB|REQUESTS_DB|CARDS_DB)\b/.test(line)) problems.push(`${f}:${i + 1}: DROP must run on the drill handle (env.DRILL_DB) only`);
+    }
+    for (const m of line.matchAll(/\bDELETE\s+FROM\s+([\w"]+)/gi)) {
+      if (!DELETE_OK.has(m[1].replace(/"/g, ''))) problems.push(`${f}:${i + 1}: DELETE FROM ${m[1]} is not allowed (only ops' own bookkeeping tables: ${[...DELETE_OK].join(', ')})`);
+    }
+  });
+}
+if (/DRILL_DB/.test(readFileSync(join(ROOT, 'src/drill.js'), 'utf8')) === false) problems.push('src/drill.js: the restore drill must use env.DRILL_DB');
+for (const f of files.filter((f) => f.startsWith('src/') && f.endsWith('.js') && f !== 'src/drill.js')) {
+  if (/env\.DRILL_DB\b/.test(readFileSync(join(ROOT, f), 'utf8').replace(/^\s*\/\/.*$/gm, '').replace(/!env\.DRILL_DB|env\.DRILL_DB \?|env\.DRILL_DB\)|env\.DRILL_DB &&/g, ''))) problems.push(`${f}: only src/drill.js may use the scratch database DRILL_DB`);
+}
+
 // 5. Text-file content rules. This repository is public: no personal email addresses (tests use fictional people).
 const FICTIONAL = new Set(['you@overyondr.com', 'name@overyondr.com', 'ada.owner@overyondr.com', 'ben.admin@overyondr.com',
   'cy.staff@overyondr.com', 'dee.new@overyondr.com']);

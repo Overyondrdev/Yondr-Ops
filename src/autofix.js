@@ -5,6 +5,7 @@ import { dispatch } from './alerts.js';
 import { parseCost, recordCost, usd } from './budget.js';
 import { ALLOWED_REPOS, DASHBOARD_URL } from './checks.js';
 import { openRevertPr, RevertRefused } from './github.js';
+import { issueForAutofix } from './issues.js';
 import { getSettings } from './settings.js';
 
 export const STATUSES = ['queued', 'triaged', 'fixing', 'pr_open', 'checks_failed', 'merged', 'deployed', 'verified', 'failed', 'reverted', 'rejected'];
@@ -56,6 +57,11 @@ export async function alertFor(env, entry, type, settings, extra = {}) {
     detail: [`Repository: ${entry.repo}`, entry.feedback_id ? `Feedback item #${entry.feedback_id}` : null, entry.pr_url ? `Pull request: ${entry.pr_url}` : null, extra.detail].filter(Boolean).join('\n'),
     done: extra.done, link: `${DASHBOARD_URL}/#autofix/${entry.id}`,
   }, { settings }).catch((e) => console.error('autofix alert failed', e && e.stack));
+  // A failed or reverted fix needs a person: track it as an issue (src/issues.js).
+  if (type === 'autofix_failed' || type === 'autofix_reverted') {
+    await issueForAutofix(env, entry, type, { settings, severity: extra.severity, detail: extra.detail })
+      .catch((e) => console.error('autofix issue failed', e && e.stack));
+  }
 }
 
 /** POST /api/autofix/events (ingest token). */

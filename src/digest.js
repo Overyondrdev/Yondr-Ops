@@ -47,10 +47,17 @@ export async function weeklyBackupDigest(env, settings, nowMs) {
     FROM backups WHERE created_at >= ? GROUP BY db ORDER BY db`).bind(since).all();
   const lines = results.map((r) => `• ${r.db}: ${r.ok} of ${r.runs} nights OK, latest size up to ${Math.round((r.bytes || 0) / 1024)} KiB`);
   const allOk = results.every((r) => r.ok === r.runs);
+  // Last restore drill per database (src/drill.js, monthly).
+  const { results: drills } = await db.prepare(`SELECT d.db, d.status, d.started_at, d.detail FROM restore_drills d
+    JOIN (SELECT db, MAX(id) AS id FROM restore_drills GROUP BY db) m ON m.id = d.id ORDER BY d.db`).all().catch(() => ({ results: [] }));
+  if (drills.length) {
+    lines.push('', 'Last restore drill:');
+    for (const d of drills) lines.push(`• ${d.db}: ${d.status === 'ok' ? 'restored fine' : d.status} (${d.started_at.slice(0, 10)})`);
+  } else lines.push('', 'No restore drill has run yet (1st of each month, or Backups → Run restore drill).');
   await dispatch(env, {
     type: 'backup_ok_weekly_digest', kind: 'digest', severity: 'info',
     title: allOk ? 'Weekly backups: all good' : 'Weekly backups: some nights failed',
-    detail: lines.join('\n') || 'No backups ran last week.', done: 'Backups run every night at 03:17 UTC and are kept in R2 (yondr-ops-backups).',
+    detail: (results.length ? '' : 'No backups ran last week.\n') + lines.join('\n'), done: 'Backups run every night at 03:17 UTC and are kept in R2 (yondr-ops-backups).',
     link: `${DASHBOARD_URL}/#backups`,
   }, { settings, nowMs });
 }

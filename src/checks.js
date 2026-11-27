@@ -125,3 +125,48 @@ export function staticChecks() {
     { id: PUBLIC_SITE.id, site: PUBLIC_SITE.site, kind: 'public', url: PUBLIC_SITE.url },
   ];
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// 6. Workers (Overview, Errors, Deploys, rollback). gates: the GATE checks that show whether the Worker's site works;
+//    a deploy that makes one of them fail is a regression (src/deploys.js). Same names as EXPECTED_INVENTORY.workers.
+// ---------------------------------------------------------------------------------------------------------------
+export const WORKERS = [
+  { worker: 'overyondr-website-v1', label: 'Website (portal, V1, V2)', gates: ['gate:portal', 'gate:www', 'gate:v1', 'gate:v2'] },
+  { worker: 'yondr-feedback', label: 'Feedback tool', gates: ['gate:feedback-admin', 'gate:feedback-widget', 'gate:feedback-api'] },
+  { worker: 'yondr-auth', label: 'Sign-in', gates: ['gate:auth'] },
+  { worker: 'yondr-ad-portal', label: 'Ad library', gates: ['gate:ads'] },
+  { worker: 'yondr-christmas-cards', label: 'Christmas cards', gates: ['gate:cards'] },
+  { worker: 'yondr-marketing-requests', label: 'Marketing requests', gates: ['gate:requests'] },
+  { worker: 'yondr-ops', label: 'Yondr Ops', gates: [] },
+];
+export const workerOf = (name) => WORKERS.find((w) => w.worker === name) || null;
+
+// Server errors per Worker (src/errors.js, every 5 minutes with CF_API_TOKEN): over the last `windowMinutes`, with at
+// least `minRequests` requests, an error rate above warnPct = warning, above highPct = high.
+export const ERRORS = { every: 5, windowMinutes: 15, minRequests: 20, warnPct: 2, highPct: 10, keepDays: 8 };
+// Browser errors reported by the feedback widget: more than `client_errors_threshold` (setting, default 20) in this
+// many minutes for one project = client_errors_spike (at most one alert per project per hour).
+export const CLIENT_ERRORS = { windowMinutes: 15, realertMinutes: 60, maxSamples: 10 };
+
+// Deploy watch (src/deploys.js): every new deployment is compared with the hour before it for 15 minutes.
+export const DEPLOY_WATCH = { watchMinutes: 15, baselineMinutes: 60, minRequests: 20, maxNewDeployAgeMinutes: 60,
+  // worse = error rate after > max(floorPct, 2 × before + 1 point), with at least minRequests after the deploy
+  floorPct: 2 };
+
+// Secrets each Worker needs (names only; Overview "setup gaps", read with GET .../workers/scripts/<name>/settings).
+export const EXPECTED_SECRETS = {
+  'yondr-ops': ['CF_API_TOKEN', 'CF_DEPLOY_TOKEN', 'GITHUB_TOKEN', 'OPS_INGEST_TOKEN', 'RESEND_API_KEY'],
+  'yondr-feedback': ['OPS_INGEST_TOKEN'],
+  'yondr-christmas-cards': ['RESEND_API_KEY'],
+};
+
+// Cloudflare Access seats (daily): any seat in use means someone signs in through Access instead of the Yondr sign-in.
+export const ACCESS_SEATS = { every: 1440 };
+
+// Tools whose people & roles ops shows (People & permissions). Only feedback/ops roles are editable from ops.
+export const TOOLS = {
+  feedback: { label: 'Feedback tool & Ops', manage: 'https://feedback.overyondrdev.com/admin#people' },
+  ads: { label: 'Ad library', manage: 'https://ads.overyondrdev.com/' },
+  requests: { label: 'Marketing requests', manage: 'https://requests.overyondrdev.com/' },
+  cards: { label: 'Christmas cards', manage: 'https://cards.overyondrdev.com/' },
+};
