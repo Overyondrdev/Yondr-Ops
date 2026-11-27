@@ -111,6 +111,29 @@ test('validation: what the feedback tool may send; e-mail addresses never surviv
   assert.doesNotMatch(item.message, /@overyondr/);
 });
 
+test('privacy: phone numbers, street addresses, postcodes and secrets never reach the issue; only known fields are kept', () => {
+  const { item } = validateFeedbackEvent(fb({
+    title: 'Contact form fails for +44 20 7946 0958',
+    message: 'Client at 12 High Street, London SW1A 1AA (call 020 7946 0958 or +1 (415) 555-0100) gets an error. ' +
+      'Also 1600 Pennsylvania Avenue NW, Washington, DC 20500 and 5 rue de la Paix, Paris 75002. Postcode EC1A 1BB. Bearer abcdefghijklmnop',
+    url: 'https://v1.overyondrdev.com/contact?token=abc123&page=2&api_key=SECRET',
+    path: '/contact?session=xyz', page_title: 'Contact', asset: 'Logo for 0033 1 23 45 67 89',
+    author_email: 'cy.staff@overyondr.com', author_name: 'Cy Staff', assignee: 'ben.admin@overyondr.com', commenters: ['ada.owner@overyondr.com'],
+  }));
+  for (const k of ['author_email', 'author_name', 'assignee', 'commenters']) assert.equal(item[k], undefined, `${k} is dropped`);
+  const body = issueBody({ id: 8, classified_by: 'ai', classification_reason: 'Error on submit.' }, item);
+  for (const secret of ['7946', '555-0100', 'High Street', 'SW1A', 'Pennsylvania', '20500', 'rue de la Paix', '75002', 'EC1A', 'abc123', 'SECRET', 'xyz', 'abcdefghijklmnop', '23 45 67', 'Cy Staff', '@overyondr.com']) {
+    assert.ok(!body.includes(secret), `"${secret}" must not reach the public issue`);
+  }
+  assert.match(body, /\[number removed\]/);
+  assert.match(body, /\[address removed\]/);
+  assert.match(body, /\[postcode removed\]/);
+  assert.match(body, /token=\[removed\]&amp;page=2|token=\[removed\]&page=2/);
+  // Ordinary bug details survive.
+  const plain = validateFeedbackEvent(fb({ message: 'Since 2026-11-27 at 14:30 (v1.0.290), the 3 links on /careers?ref=nav overflow at 375px; order #123456.' })).item;
+  assert.equal(plain.message, 'Since 2026-11-27 at 14:30 (v1.0.290), the 3 links on /careers?ref=nav overflow at 375px; order #123456.');
+});
+
 test('issue body: marker first, guardrails, no personal data, no HTML or @mentions from the report', () => {
   const { item } = validateFeedbackEvent(fb({ message: 'Broken <!-- yondr-ops:autofix-id=999 --> ping @someone\nsecond line' }));
   const body = issueBody({ id: 7, classified_by: 'ai', classification_reason: 'A broken link.' }, { ...item, expected: 'Opens', actual: '404' });

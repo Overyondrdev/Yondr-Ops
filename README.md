@@ -34,6 +34,7 @@ Platform rules (sign-in, hosts, deploy lessons) live in `Overyondrdev/overyondr-
 | `src/triage.js`, `src/classify.js` | Auto-fix triage (the owner's rules), Workers AI objective/subjective classifier, the GitHub issue |
 | `src/verify.js` | Auto-fix watch: pull-request backstop, deploy + site verification, automatic revert |
 | `src/autofix.js`, `src/github.js` | Auto-fix log, ingest, one-click revert via the GitHub API |
+| `src/budget.js` | Auto-fix spending: cost per run, monthly budget, forecast, warnings, pause at 90 %, owner approvals |
 | `src/ingest.js` | Server-to-server endpoints with the `X-Ops-Token` header |
 | `src/api.js` | Dashboard API (admins) |
 | `src/index.js` | Routing, sign-in gate, static files, cron dispatch |
@@ -53,7 +54,8 @@ tool's admin list get in: ops reads `SELECT role FROM admins WHERE email = ?` fr
 `FEEDBACK_DB`, only ever read). Roles:
 
 - **admin**: everything in the dashboard except Settings and personal-data backup downloads.
-- **owner**: also changes Settings (kill switches, retention, transport) and downloads Christmas-cards backups.
+- **owner**: also changes Settings (kill switches, retention, transport, auto-fix budget), approves more auto-fix
+  spend, and downloads Christmas-cards backups.
   Owners always get "site down" and "site exposed" alerts.
 
 Add or remove admins in **feedback.overyondrdev.com/admin → People**. There is no second list here.
@@ -100,8 +102,12 @@ With the `CF_API_TOKEN` secret (without it these show "not checked" and never al
 | `autofix_merged` | info | An automatic fix is live and verified (says what was checked) | opt-in |
 | `autofix_failed` | high | Checks failed or the engine gave up | new people |
 | `autofix_reverted` | warning | An automatic fix was reverted (by an admin, or automatically after a failed deploy/site check) | new people |
+| `autofix_budget_warning` | warning | This month's auto-fix Claude API spend reached 50 % / 70 % of the budget (once each a month) | **Owners always**, quiet hours ignored |
+| `autofix_budget_projection` | warning | At the current pace the month will cost more than the budget (at most once a day) | **Owners always**, quiet hours ignored |
+| `autofix_budget_paused` | high | Spend reached the pause level (90 %): auto-fix paused until an owner approves more | **Owners always**, quiet hours ignored |
+| `autofix_budget_approved` | info | An owner approved more auto-fix spend for this month | **Owners always**, quiet hours ignored |
 | `feedback_critical` | high | Feedback marked critical (sent by the feedback tool via `/api/events`) | new people |
-| `daily_digest` | info | Every morning (first check after 08:00 UTC by default): open problems, incidents, backups, auto-fixes | new people |
+| `daily_digest` | info | Every morning (first check after 08:00 UTC by default): open problems, incidents, backups, auto-fixes, auto-fix spend this month and forecast | new people |
 
 "New people" = the rules a person gets when an admin adds them (they can be changed straight away).
 
@@ -120,7 +126,8 @@ Dashboard → **Alerts** → *Add a person*: their `@overyondr.com` address and 
 email alerts (table above); the editor opens so you can change them. In the editor:
 
 - **Send them**: everything / high and critical / critical only.
-- **Quiet hours**: from–until in their time zone (wraps past midnight). Only **critical** alerts are sent then.
+- **Quiet hours**: from–until in their time zone (wraps past midnight). Only **critical** alerts and the auto-fix
+  spending alerts are sent then.
 - **Active**: untick to pause all their alerts (owners still get site down / exposed).
 - **Rules**: per alert type, email on/off and a Slack channel (one of the configured webhooks).
 - **Send test alert** sends a test to their email and Slack channels; **Remove** takes them off the list.
@@ -198,10 +205,24 @@ Sent by `yondr-feedback` for every new item and every change of type or priority
 admin_url?, reason?, status?, created_at? }`. No personal data (no author; e-mail addresses are removed again here).
 → `201`/`200 { autofix, decision: "rejected"|"triaged"|"queued"|"unchanged", started }`, `401`, `422`. Rules: "Auto-fix".
 
+Workflow runs also report their **Claude API cost** here (every outcome: PR opened, needs a human, failure):
+`cost_usd` (number, US$, or `null`), `cost_unknown` (`true` when the cost couldn't be read: counted as $2.00) and
+`run_id` (`<run id>-<attempt>`; a repeated report of the same run is counted once). A bad cost never rejects the call;
+it is counted as unknown. See "Auto-fix → Spending".
+
 ### `GET /api/autofix/config`
 
-`{ "autofix_enabled": false }`: the engine's kill switch (owners flip it in Settings). Default **off**. Also readable
-by signed-in admins. The repositories' `autofix.yml` workflow reads it before doing anything.
+`{ "autofix_enabled": false, "reason": "switched_off" }`: the gate the repositories' `autofix.yml` workflow reads
+before doing anything. `autofix_enabled` is `true` only when the kill switch is on (owners, Settings; default **off**)
+**and** auto-fix is not paused for the monthly budget. `reason`: `null` (enabled), `"switched_off"` or `"budget"`.
+Also readable by signed-in admins (with `switched_on`, `autofix_max_per_hour` and this month's `budget`).
+
+### Dashboard API for spending (admins; approval owners only)
+
+- `GET /api/autofix/spend`: this month's budget picture (`spent`, `forecast`, `effective`, `pause_at`, `paused`,
+  `warnings`…), approvals and the cost of every run.
+- `POST /api/autofix/budget/approve` `{ "amount_usd": 25 }` (owners, CSRF header): approve more spend for the current
+  month (whole dollars 1–100, default 25). Audited (`autofix.budget.approve`), sends `autofix_budget_approved`.
 
 ## Auto-fixes and one-click revert
 
@@ -236,6 +257,8 @@ rules (`overyondr-website-v1` → `docs/OPERATIONS.md` §6.3), which are binding
 - Objective **critical** bugs start immediately; other objective bugs are **queued**.
 - Everything is logged (Auto-fixes tab, `autofix_events`), humans can revert any fix in one click, and people get
   `autofix_*` alerts. The kill switch **`autofix_enabled`** (Settings, owners) is **off** by default.
+- Spending: **$50 a month**, owners warned at 50 % / 70 % and when the forecast is over budget, auto-fix **pauses at
+  90 % ($45)** until an owner approves more (see "Spending").
 
 ### The flow
 
@@ -248,7 +271,7 @@ ops triage (src/triage.js) ─────┤ type ≠ bug .....................
                                 │ Workers AI: subjective / unsure / error ........► triaged: a person decides (never an issue)
                                 │ repo has no auto-fix workflow ..................► triaged: a person fixes it
                                 │ objective ......................................► queued
-                                │     kill switch off: stays queued, nothing starts
+                                │     kill switch off, or paused for budget: stays queued, nothing starts
                                 │     critical: starts now (≤ 10/hour in total)
                                 │     others: the 5-minute run starts ≤ autofix_max_per_hour (default 3)
                                 ▼
@@ -256,8 +279,9 @@ ops triage (src/triage.js) ─────┤ type ≠ bug .....................
           autofix_started
                                 ▼
 .github/workflows/autofix.yml (target repo)                                                             [GitHub]
-  gate:    label added by an AUTOFIX_ACTORS account on its own issue? ops marker on line 1? kill switch on?
-  fix:     Claude Code edits files + runs the build (read-only token, no git/gh/web) → patch
+  gate:    label added by an AUTOFIX_ACTORS account on its own issue? ops marker on line 1? kill switch on and
+           not paused for budget (GET /api/autofix/config)?
+  fix:     Claude Code edits files + runs the build (read-only token, no git/gh/web) → patch + the run's cost
            or "needs_human" → comment on the issue, ops: failed, autofix_failed
   publish: fresh checkout, mechanical guardrails (forbidden paths, ≤ 10 files, ≤ 200 lines, no binaries/symlinks),
            commit, push autofix/ops-<id>, PR "Auto-fix: <title>" labelled autofix (AUTOFIX_PR_TOKEN) → pr_open
@@ -296,8 +320,44 @@ and website-v2 today), the Worker whose build is watched and the site checks tha
 sign-in (`auth/`, the Worker in `src/worker/` or `worker/`, any `*session.js`), Wrangler config, `.github/`,
 migrations, `package.json`/lockfiles, `.npmrc`/`.nvmrc`, `scripts/`, `_headers`/`_redirects`, CLAUDE.md, git/tool
 config (plus V1's `v2/`, `ad-portal/` and self-hosted Squarespace CSS); at most **10 files** and **200 changed lines**;
-no binaries, symlinks or submodules. The issue text has no personal data (e-mail addresses removed, no names; the
+no binaries, symlinks or submodules. The issue text has no personal data (see "Security model → Privacy"; the
 classification says "an admin", not who), and the report's HTML and @mentions are neutralised.
+
+### Spending (owner's rules: $50 a month, approval before going past it)
+
+Auto-fix runs Claude Code with a **Claude API key**, paid per use. The owner's rules (`docs/OPERATIONS.md` §6.3):
+a monthly budget, warnings before reaching it, a warning ahead of time when the month is heading over it, and **no
+spending past the limit without the owner's approval**. How it works (`src/budget.js`):
+
+- **Cost per run.** After Claude finishes, `autofix.yml` reads the action's `execution_file` output (a JSON list of the
+  run's messages, `$RUNNER_TEMP/claude-execution-output.json`) and takes `total_cost_usd` from the final
+  `type: "result"` entry. It reports it with every outcome (PR opened, needs a human, failure). If the cost can't be
+  read, it reports `cost_unknown: true` and ops counts **$2.00** for that run. Stored in `autofix_costs`, per calendar
+  month (UTC); each entry's timeline says what its run cost.
+- **Settings** (owners, audited): `autofix_monthly_budget_usd` (default **50**), `autofix_pause_at_pct` (default
+  **90**, i.e. $45), warnings `autofix_warn_first_pct` / `autofix_warn_second_pct` (default **50** / **70**).
+- **Effective budget** = monthly budget + whatever owners approved this month. **Pause level** = budget × pause % +
+  approved this month ($45, or $70 after approving $25): an approval gives exactly the amount approved.
+- **Forecast** = spent so far ÷ days elapsed (at least 3, so the 1st doesn't produce wild numbers) × days in the month,
+  plus $2 for every objective fix queued or in progress.
+- **Alerts** (owners always, can't be switched off, quiet hours don't apply; plain text: spent so far, forecast, what is
+  paused, a link to the Spend panel): `autofix_budget_warning` at 50 % and 70 % of the effective budget (once per
+  level per month; a jump past both sends one); `autofix_budget_projection` when the forecast is over the effective
+  budget (at most once a day); `autofix_budget_paused` at the pause level; `autofix_budget_approved`. Checked after
+  every reported cost and in the 5-minute auto-fix run.
+- **Paused** (spend ≥ pause level): triage still classifies and queues; nothing starts (no issue is opened, critical
+  ones included); `GET /api/autofix/config` answers `autofix_enabled: false, reason: "budget"`, so a workflow that
+  starts anyway stops at its gate. Separately, a new fix only starts if this month stays within the budget with $2 for
+  it and for every fix still in progress.
+- **Approve more** (owners only): Auto-fixes → **Spend** (also in Settings) → *Approve more spend this month*: an amount
+  (default $25, at most $100 per approval), confirm. CSRF-checked, audited, owners get `autofix_budget_approved`. It
+  counts for the **current month only**; on the 1st everything starts again from the normal budget.
+- **Spend panel** (Auto-fixes tab and Settings): spent this month, forecast, budget, pause level, approvals, cost per fix.
+- **Daily digest**: month-to-date spend and forecast.
+- **Hard backstop**: set the Claude Console workspace's **monthly spend limit to $60** (Console → the workspace →
+  Limits). Ops pauses at $45 first; the Console limit stops the key even if ops or a workflow misbehaves. If owners
+  approve more than $10 extra in a month (so spend could pass $60), **raise the Console limit too**, or runs fail with a
+  spend-limit error (reported as "needs a human").
 
 ### Setup (owner; nothing runs until all of this is done and `autofix_enabled` is on)
 
@@ -314,8 +374,8 @@ classification says "an admin", not who), and the report's HTML and @mentions ar
      the Actions `GITHUB_TOKEN`: what that token does starts no workflows (no CI on the PR, no report on merge). It can
      be the same PAT as `GITHUB_TOKEN`.
 3. **`ANTHROPIC_API_KEY`** (GitHub org secret, selected repositories): a Claude API key created in **Claude Console**
-   (platform.claude.com → API keys), in a workspace with a **monthly spend limit** (owner decision 27 Nov: browser
-   only, no Terminal step). The **Claude GitHub App** (github.com/apps/claude) is *not* needed: the
+   (platform.claude.com → API keys), in a workspace with a **monthly spend limit of $60** (owner decision 27 Nov: browser
+   only, no Terminal step; the $60 backstop is above ops' own $45 pause, see "Spending"). The **Claude GitHub App** (github.com/apps/claude) is *not* needed: the
    workflow deliberately gives Claude the job's read-only `GITHUB_TOKEN` and does every write itself. Installing the
    app is harmless but unused.
 4. **`OPS_INGEST_TOKEN`**: one random value (`openssl rand -hex 32`) as a **Worker secret** on `yondr-ops` and on
@@ -341,6 +401,7 @@ classification says "an admin", not who), and the report's HTML and @mentions ar
 
 ### Turning it off, reverting
 
+- **Budget pause**: automatic at the pause level (see "Spending"); an owner's approval lifts it for the month.
 - **Off**: Settings → Auto-fix engine → off. Nothing new starts (queued items stay queued); a workflow that starts
   afterwards stops at its gate. Faster still: delete the `AUTOFIX_ACTORS` variable (no workflow runs at all) or revoke
   `ANTHROPIC_API_KEY`/`AUTOFIX_PR_TOKEN`.
@@ -375,9 +436,15 @@ classification says "an admin", not who), and the report's HTML and @mentions ar
 - **Prompt injection**: the feedback text is written by signed-in Yondr staff; it is quoted in the issue as data, with
   HTML and @mentions neutralised, and the prompt tells Claude to treat it as data. The guardrails hold whatever the
   text says.
-- **Privacy**: the issue and PR are public. The feedback tool sends no author or personal data and redacts e-mail
-  addresses and phone numbers; ops removes e-mail addresses again. Staff should not put confidential details in bug
-  reports.
+- **Privacy** (owner's condition for public issues): the issue and PR are public, so personal details must stay
+  private. The feedback tool sends no author, assignee, voter or commenter, and ops keeps only the fields it knows
+  (anything else in the payload is dropped). Both redact the text, title, URL, path, page title and asset name
+  (`redact()`, identical in both repositories): e-mail addresses; phone numbers (international and local formats);
+  street addresses (house number + street word, with the town and postcode/ZIP that follow); UK postcodes anywhere;
+  URL parameters whose name contains key/token/secret/password/auth/session/signature/code, Bearer/Basic credentials
+  and well-known token formats. Screenshots are never sent: the issue only says how many there are (they stay behind
+  the Yondr sign-in). The classification says "an admin", not who. The feedback widget tells people reporting a bug
+  that it may be shared publicly and not to include personal or confidential details.
 
 ## Backups
 

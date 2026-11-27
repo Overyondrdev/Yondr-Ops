@@ -7,10 +7,13 @@
 //   4. The repository must have the auto-fix workflows (AUTOFIX_TARGETS[repo].workflow). Otherwise → a person.
 //   5. Objective → "queued". If the kill switch `autofix_enabled` is on: CRITICAL ones start now; the others are started
 //      by the 5-minute run, at most `autofix_max_per_hour` per hour (and never more than AUTOFIX.hardCapPerHour).
+//   6. Spending (src/budget.js): when this month's Claude API spend reached the pause level, or one more fix could take
+//      it past the budget, objective bugs stay queued and nothing starts until spend allows or an owner approves more.
 // "Starting" = opening a GitHub issue in the target repository, labelled `autofix` (+ `autofix-critical`): that label
 // starts the repository's `.github/workflows/autofix.yml` (Claude Code), which opens a pull request. Every step is
 // logged in autofix_events. No personal data reaches GitHub (the repositories are public).
 import { addEvent, alertFor } from './autofix.js';
+import { loadBudget, usd } from './budget.js';
 import { AUTOFIX, AUTOFIX_TARGETS, DASHBOARD_URL, PROJECT_REPOS } from './checks.js';
 import { classify } from './classify.js';
 import { gh } from './github.js';
@@ -23,9 +26,45 @@ const ENGAGED = new Set(['fixing', 'pr_open', 'checks_failed', 'merged', 'deploy
 export const UNKNOWN_REPO = 'unknown';
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+// ---- personal-data redaction (keep identical in yondr-feedback src/ops.js and yondr-ops src/triage.js) ----
+// Bug reports may end up in PUBLIC GitHub issues (auto-fix). Removed: e-mail addresses; phone numbers (international
+// and local formats, 9+ digits, or 7+ after + / 00); street addresses (house number + street word, e.g. "12 High
+// Street", "1600 Pennsylvania Ave NW", "5 rue de la Paix") with a town and postcode/ZIP that follow; UK postcodes
+// anywhere; secrets: URL parameters whose name contains key/token/secret/password/auth/session/signature/code, Bearer
+// and Basic credentials, and well-known token formats.
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const SECRET_PARAM = /([?&;#][\w.-]*?(?:key|token|secret|passw(?:or)?d|pwd|auth|session|signature|sig|code|credential)[\w.-]*=)[^&#\s"'<>]+/gi;
+const AUTH_HEADER = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g;
+const TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant-)?[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|re_[A-Za-z0-9_]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})/g;
+const STREET = '(?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Boulevard|Blvd|Way|Close|Court|Ct|Place|Pl|Square|Sq|Terrace|Crescent|Cres|Gardens|Grove|Hill|Row|Mews|Walk|Parkway|Pkwy|Highway|Hwy|Strasse|Straße|Weg|Gasse|Plaza)';
+const POSTCODE = '(?:[A-Z]{1,2}\\d[A-Z\\d]?\\s*\\d[A-Z]{2}|\\d{5}(?:-\\d{4})?|\\d{4}\\s?[A-Z]{2}|[A-Z]\\d[A-Z]\\s?\\d[A-Z]\\d|\\d{4})';
+const TAIL = `(?:,?\\s+(?:N|S|E|W|NE|NW|SE|SW)\\b)?(?:,?\\s+[A-Z][A-Za-z.'-]+\\b){0,3}(?:,?\\s+${POSTCODE}\\b)?`;
+const ADDRESS = new RegExp(
+  `\\b\\d{1,5}[A-Za-z]?(?:[-–]\\d{1,5})?,?\\s+(?:(?:[A-Z][A-Za-z'.-]*|of|the)\\s+){1,4}(?:${STREET}|${STREET.toLowerCase()})\\b\\.?${TAIL}` +
+  `|\\b\\d{1,5}[A-Za-z]?,?\\s+(?:[Rr]ue|[Aa]venue|[Vv]ia|[Cc]alle|[Bb]oulevard|[Pp]lace)\\s+(?:(?:de|du|des|la|le|del|di|della|von)\\s+)*[A-Z][A-Za-z'-]+(?:\\s+[A-Z][A-Za-z'-]+)?${TAIL}`, 'g');
+const UK_POSTCODE = /\b(?:[A-Z]{1,2}\d[A-Z\d]?|GIR)\s*\d[ABD-HJLNP-UW-Z]{2}\b/g;
+const PHONE = /(?<![\w/=.#-])(?:\+|00)?\(?\d[\d (). -]{5,}\d(?![\w/])/g;
+
+/** Remove personal details and secrets from free text before it can leave for a public place. Pure. */
+export function redact(s) {
+  return String(s ?? '')
+    .replace(SECRET_PARAM, '$1[removed]')
+    .replace(AUTH_HEADER, '$1 [removed]')
+    .replace(TOKEN, '[token removed]')
+    .replace(EMAIL, '[email removed]')
+    .replace(ADDRESS, '[address removed]')
+    .replace(UK_POSTCODE, '[postcode removed]')
+    .replace(PHONE, (m) => {
+      const digits = m.replace(/\D/g, '').length;
+      // Dates (2026-11-27, 27.11.2026), times and short numbers stay; phone numbers have 9+ digits (7+ after + / 00).
+      if (/^\d{4}-\d{2}-\d{2}/.test(m) || /^\d{1,2}[.-]\d{1,2}[.-]\d{2,4}$/.test(m.trim())) return m;
+      if (digits > 15 || digits < (/^(\+|00)/.test(m) ? 7 : 9)) return m;
+      return '[number removed]';
+    });
+}
+// ---- end of personal-data redaction ----
 /** Belt and braces: the feedback tool already redacts, but nothing personal may reach a public issue. */
-export const scrub = (s) => String(s ?? '').replace(EMAIL, '[email removed]');
+export const scrub = redact;
 
 /** Validate what the feedback tool sends. Returns { item } or { error }. Pure. */
 export function validateFeedbackEvent(b) {
@@ -56,7 +95,7 @@ export function validateFeedbackEvent(b) {
  * The triage decision. Pure.
  * @returns { status: 'rejected'|'triaged'|'queued', message, start: boolean }
  */
-export function decide({ item, repo, target, classification, settings, startedLastHour = 0 }) {
+export function decide({ item, repo, target, classification, settings, startedLastHour = 0, budget = null }) {
   if (item.type !== 'bug') return { status: 'rejected', start: false, message: `Not a bug (type "${item.type}"): only bugs can be fixed automatically.` };
   if (!repo) return { status: 'triaged', start: false, message: `Unknown project "${item.project || '(none)'}": a person decides.` };
   if (!classification || classification.classification !== 'objective') {
@@ -64,7 +103,11 @@ export function decide({ item, repo, target, classification, settings, startedLa
   }
   if (!target || !target.workflow) return { status: 'triaged', start: false, message: `Objective, but ${repo} doesn't have the auto-fix workflow yet: a person fixes it.` };
   if (!settings.autofix_enabled) return { status: 'queued', start: false, message: 'Objective. Queued, but the auto-fix engine is switched off (Settings): nothing starts until an owner turns it on.' };
+  if (budget && budget.paused) {
+    return { status: 'queued', start: false, message: `Objective. Queued, but auto-fix is paused: this month's spend (${usd(budget.spent)}) reached the pause level (${usd(budget.pause_at)}). Nothing starts until an owner approves more spend (Auto-fixes → Spend).` };
+  }
   if (item.priority === 'critical') {
+    if (budget && !budget.can_start) return { status: 'queued', start: false, message: `Objective and critical, but starting it now could take this month's spend past the ${usd(budget.effective)} budget: queued until fixes in progress report their cost.` };
     if (startedLastHour >= AUTOFIX.hardCapPerHour) return { status: 'queued', start: false, message: `Objective and critical, but ${AUTOFIX.hardCapPerHour} fixes already started in the last hour: queued for the next run.` };
     return { status: 'queued', start: true, message: 'Objective and critical: starting now.' };
   }
@@ -114,7 +157,8 @@ export async function triageFeedback(env, body, { nowMs = Date.now(), classifyFn
       classifiedBy = 'ai';
     }
   }
-  const d = decide({ item, repo, target, classification, settings, startedLastHour: await startedSince(db, new Date(nowMs - 3_600_000).toISOString()) });
+  const d = decide({ item, repo, target, classification, settings, startedLastHour: await startedSince(db, new Date(nowMs - 3_600_000).toISOString()),
+    budget: await loadBudget(db, settings, nowMs) });
   const payload = JSON.stringify({ ...item, expected: classification && classification.expected || null, actual: classification && classification.actual || null });
   const f = {
     project: item.project, repo: repo || UNKNOWN_REPO, title: titleOf(item), severity: item.priority, status: d.status,
@@ -204,6 +248,15 @@ export async function startFix(env, id, { settings, nowMs = Date.now() } = {}) {
   if (!entry || entry.status !== 'queued' || entry.classification !== 'objective' || !settings.autofix_enabled) return false;
   const target = AUTOFIX_TARGETS[entry.repo];
   if (!target || !target.workflow) return false;
+  // Spending (src/budget.js): paused, or one more fix could pass the budget → stays queued.
+  const budget = await loadBudget(db, settings, nowMs);
+  if (!budget.can_start) {
+    const msg = budget.paused
+      ? `Can't start: auto-fix is paused because this month's spend (${usd(budget.spent)}) reached the pause level (${usd(budget.pause_at)}). Stays queued until an owner approves more spend.`
+      : `Can't start yet: with the fixes in progress, this month's spend could pass the ${usd(budget.effective)} budget. Stays queued.`;
+    if (await lastEventMessage(db, id) !== msg) await addEvent(db, id, 'yondr-ops', 'queued', msg);
+    return false;
+  }
   if (!env.GITHUB_TOKEN) {
     const msg = 'Can\'t start: the GITHUB_TOKEN secret is not set (README "Auto-fix" → setup). Stays queued.';
     if (await lastEventMessage(db, id) !== msg) await addEvent(db, id, 'yondr-ops', 'queued', msg);
@@ -251,6 +304,8 @@ export async function processQueue(env, { nowMs = Date.now(), settings } = {}) {
   settings = settings || await getSettings(db);
   if (!settings.autofix_enabled) return { skipped: 'auto-fix switched off' };
   if (!env.GITHUB_TOKEN) return { skipped: 'GITHUB_TOKEN not set' };
+  const budget = await loadBudget(db, settings, nowMs);
+  if (budget.paused) return { skipped: 'paused: monthly budget' };
   let started = await startedSince(db, new Date(nowMs - 3_600_000).toISOString());
   const { results } = await db.prepare(`SELECT id, severity FROM autofixes WHERE status = 'queued' AND classification = 'objective'
     ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END, created_at LIMIT ?`).bind(AUTOFIX.perRun * 3).all();
@@ -277,7 +332,7 @@ export async function reclassify(env, id, classification, actor, { nowMs = Date.
   const repo = entry.repo !== UNKNOWN_REPO ? entry.repo : null;
   const reason = `Marked ${classification} by an admin.`;
   const d = decide({ item, repo, target: repo ? AUTOFIX_TARGETS[repo] : null, classification: { classification, reason }, settings,
-    startedLastHour: await startedSince(db, new Date(nowMs - 3_600_000).toISOString()) });
+    startedLastHour: await startedSince(db, new Date(nowMs - 3_600_000).toISOString()), budget: await loadBudget(db, settings, nowMs) });
   const now = new Date(nowMs).toISOString();
   await db.prepare('UPDATE autofixes SET classification = ?, classification_reason = ?, classified_by = ?, status = ?, updated_at = ? WHERE id = ?')
     .bind(classification, reason, actor, d.status, now, id).run();

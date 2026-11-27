@@ -9,6 +9,7 @@
 //            fine for AUTOFIX.verifyMinutes after the deploy → verified, and autofix_merged says what was checked.
 import { addEvent, alertFor, revertAutofix } from './autofix.js';
 import { AUTOFIX, AUTOFIX_TARGETS, GATE } from './checks.js';
+import { checkBudget } from './budget.js';
 import { buildForCommit } from './cloudflare.js';
 import { gh } from './github.js';
 import { ensureSchema } from './schema.js';
@@ -158,5 +159,7 @@ export async function runAutofix(env, { nowMs = Date.now() } = {}) {
   const settings = await getSettings(env.DB);
   const watch = await watchFixes(env, { nowMs, settings });
   const queue = await processQueue(env, { nowMs, settings });
-  return { watch, queue };
+  // Spending alerts that are due (the forecast changes with the date, not only when a cost arrives): src/budget.js.
+  const budget = await checkBudget(env, settings, { nowMs }).catch((e) => { console.error('budget check failed', e && e.stack); return []; });
+  return { watch, queue, budget };
 }

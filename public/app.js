@@ -255,7 +255,7 @@
       h('div', { class: 'inline' }, [h('div', { class: 'field' }, [h('label', { for: 'p-qs', text: 'Quiet from' }), qs]), h('div', { class: 'field' }, [h('label', { for: 'p-qe', text: 'Quiet until' }), qe]),
         h('div', { class: 'field' }, [h('label', { for: 'p-tz', text: 'Time zone' }), tz, tzs])]),
       h('p', { class: 'small muted', text: 'During quiet hours only critical alerts are sent. Leave both times empty for no quiet hours.' }),
-      h('label', { class: 'check' }, [active, 'Active (untick to pause all their alerts; owners still get site down / exposed)']),
+      h('label', { class: 'check' }, [active, 'Active (untick to pause all their alerts; owners still get site down / exposed and auto-fix spending)']),
       h('div', { class: 'tablewrap' }, [h('table', { class: 'rules' }, [h('thead', {}, [h('tr', {}, ['Alert', 'Severity', 'Email', 'Slack'].map(function (t) { return h('th', { scope: 'col', text: t }); }))]),
         h('tbody', {}, rows.map(function (r) { return r.tr; }))])]),
       !p.webhooks.length ? h('p', { class: 'small muted', text: 'No Slack webhooks are configured yet (secrets named SLACK_WEBHOOK_…; see README).' }) : null,
@@ -304,11 +304,58 @@
         h('div', { class: 'act' }, [afPill(a.status)]),
       ]);
     });
+    var c = d.config;
+    var banner = c.reason === 'budget'
+      ? h('div', { class: 'banner red', role: 'alert', text: 'Auto-fix is paused: this month\'s spend reached the pause level (' + money(c.budget.pause_at) + '). Bugs are triaged and queued, nothing starts until an owner approves more spend (Spend, below). Reverting still works.' })
+      : h('div', { class: 'banner' + (c.autofix_enabled ? '' : ' red'), text: c.autofix_enabled ? 'The auto-fix engine is allowed to work (Settings): up to ' + c.autofix_max_per_hour + ' queued fixes an hour, critical ones straight away.' : 'The auto-fix engine is switched off (Settings): bugs are triaged and queued, nothing starts. Reverting still works.' });
     var all = h('input', { type: 'checkbox', id: 'af-all', checked: S.afAll, onchange: function () { S.afAll = all.checked; load(); } });
     return h('div', {}, [head('Auto-fixes', 'Every feedback item the feedback tool reports is triaged here. Only objective bugs are fixed automatically (critical ones straight away, the others queued); subjective ones wait for a person. Every step is logged, and any merged fix can be reverted with one click.'),
-      h('div', { class: 'banner' + (d.config.autofix_enabled ? '' : ' red'), text: d.config.autofix_enabled ? 'The auto-fix engine is allowed to work (Settings): up to ' + d.config.autofix_max_per_hour + ' queued fixes an hour, critical ones straight away.' : 'The auto-fix engine is switched off (Settings): bugs are triaged and queued, nothing starts. Reverting still works.' }),
+      banner,
       h('p', {}, [all, h('label', { for: 'af-all', text: ' Also show items that are not bugs (rejected)' })]),
-      rows.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'empty', text: 'Nothing here yet. Feedback appears once the feedback tool reports it.' })]);
+      rows.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'empty', text: 'Nothing here yet. Feedback appears once the feedback tool reports it.' }),
+      spendPanel(d.spend)]);
+  }
+
+  // Spend: this month's Claude API cost of auto-fix (README "Auto-fix → Spending").
+  function money(n) { return '$' + (Number(n) || 0).toFixed(2); }
+  function spendPanel(sp) {
+    if (!sp) return null;
+    var b = sp.budget;
+    var month = new Date(b.month + '-01T00:00:00Z').toLocaleString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    var costs = sp.costs.map(function (x) {
+      return h('tr', {}, [h('td', { text: when(x.run_at) }), h('td', {}, [h('a', { href: '#autofix/' + x.autofix_id, onclick: function (e) { e.preventDefault(); openAutofix(x.autofix_id); } }, ['#' + x.autofix_id + ' ' + (x.title || '')])]),
+        h('td', { text: x.unknown ? money(x.counted_usd) + ' (cost unknown, counted as ' + money(sp.limits.unknown_run_usd) + ')' : money(x.cost_usd) })]);
+    });
+    var approvals = sp.approvals.map(function (a) { return h('li', { text: '+' + money(a.approved_extra_usd) + ' by ' + a.approved_by + ', ' + when(a.approved_at) }); });
+    return h('section', { id: 'spend', 'aria-labelledby': 'spend-title' }, [
+      h('h2', { class: 'group', id: 'spend-title', text: 'Spend (' + month + ', Claude API)' }),
+      b.paused ? h('div', { class: 'banner red', role: 'alert', text: 'Paused: ' + money(b.spent) + ' spent, the pause level is ' + money(b.pause_at) + '.' }) : null,
+      h('div', { class: 'grid kpis' }, [kpi(money(b.spent), 'Spent this month', b.paused), kpi(money(b.forecast), 'Forecast for the month', b.over_forecast),
+        kpi(money(b.effective), b.approved_extra ? 'Budget (incl. ' + money(b.approved_extra) + ' approved)' : 'Budget'), kpi(money(b.pause_at), 'Pauses at')]),
+      h('p', { class: 'small muted', text: 'Forecast = spend so far ÷ days elapsed (at least 3) × days in the month, plus ' + money(2) + ' for each fix waiting or in progress (' + (b.queued + b.running) + ' now). Owners are warned at ' + b.warnings.map(function (w) { return w.pct + ' % (' + money(w.at) + ')'; }).join(' and ') + ', when the forecast is over budget, and when auto-fix pauses. A run whose cost could not be read counts as ' + money(sp.limits.unknown_run_usd) + '.' }),
+      approveControl(sp),
+      approvals.length ? h('div', {}, [h('h3', { class: 'group', text: 'Approved this month' }), h('ul', {}, approvals)]) : null,
+      h('h3', { class: 'group', text: 'Cost per fix this month' }),
+      costs.length ? h('div', { class: 'tablewrap' }, [h('table', {}, [h('thead', {}, [h('tr', {}, ['When', 'Fix', 'Cost'].map(function (t) { return h('th', { scope: 'col', text: t }); }))]), h('tbody', {}, costs)])])
+        : h('p', { class: 'muted', text: 'No auto-fix runs this month yet.' }),
+    ]);
+  }
+  function approveControl(sp) {
+    if (!isOwner()) return h('p', { class: 'small muted', text: 'Only owners can approve more spend.' });
+    return h('p', {}, [btn('Approve more spend this month', function () { approveDialog(sp); }, sp.budget.paused ? 'primary' : '')]);
+  }
+  function approveDialog(sp) {
+    var lim = sp.limits;
+    var amount = h('input', { class: 'input', id: 'approve-amount', type: 'number', min: '1', max: String(lim.max_approval_usd), step: '1', value: String(lim.default_approval_usd), 'aria-describedby': 'approve-help' });
+    dialog('Approve more auto-fix spend?', h('div', { class: 'form' }, [
+      h('p', { text: 'This month so far: ' + money(sp.budget.spent) + ' of ' + money(sp.budget.effective) + ' (forecast ' + money(sp.budget.forecast) + '). The extra amount is for this month only; auto-fix pauses again when it is used up.' }),
+      h('div', { class: 'field' }, [h('label', { for: 'approve-amount', text: 'Extra amount (US$)' }), amount,
+        h('small', { id: 'approve-help', text: 'Whole dollars, 1 to ' + lim.max_approval_usd + ' per approval. If this month\'s total would pass the Claude Console spend limit, raise that limit in Claude Console too.' })]),
+    ]), 'Approve', function () {
+      var n = Number(amount.value);
+      if (!Number.isInteger(n) || n < 1 || n > lim.max_approval_usd) { amount.focus(); toast('Enter a whole number from 1 to ' + lim.max_approval_usd); return false; }
+      return api('autofix/budget/approve', { method: 'POST', body: { amount_usd: n } }).then(function (r) { toast('Approved ' + money(n) + ' more for this month'); load(); return r; });
+    });
   }
   function openAutofixByFeedback(fid) {
     api('autofix/by-feedback/' + fid).then(function (r) { showAutofix(r.autofix); }).catch(fail);
@@ -392,6 +439,7 @@
     var audit = d.audit.map(function (a) { return h('tr', {}, [h('td', { text: when(a.created_at) }), h('td', { text: a.actor }), h('td', { text: a.action }), h('td', { class: 'small', text: a.detail === '{}' ? '' : a.detail })]); });
     return h('div', {}, [head('Settings', isOwner() ? 'Kill switches and retention. Changes are logged.' : 'Only owners can change these.'),
       h('div', { class: 'card form' }, fields.concat(isOwner() ? [h('div', {}, [btn('Save settings', save, 'primary')])] : [])),
+      spendPanel(d.spend),
       h('h2', { class: 'group', text: 'Secrets and connections' }),
       h('div', { class: 'tablewrap' }, [h('table', {}, [h('tbody', {}, secrets)])]),
       h('p', { class: 'small muted', text: 'Values are never shown. Set them with `npx wrangler secret put NAME` (README "Secrets").' }),
@@ -434,8 +482,8 @@
     incidents: function () { return api('incidents').then(viewIncidents); },
     alerts: function () { return Promise.all([api('people'), api('alerts')]).then(function (r) { S.data.people = r[0]; return viewAlerts({ people: r[0], log: r[1] }); }); },
     backups: function () { return api('backups').then(viewBackups); },
-    autofix: function () { return Promise.all([api('autofix' + (S.afAll ? '' : '?status=active')), api('autofix/config')]).then(function (r) { return viewAutofix({ autofixes: r[0].autofixes, config: r[1] }); }); },
-    settings: function () { return api('settings').then(viewSettings); },
+    autofix: function () { return Promise.all([api('autofix' + (S.afAll ? '' : '?status=active')), api('autofix/config'), api('autofix/spend')]).then(function (r) { return viewAutofix({ autofixes: r[0].autofixes, config: r[1], spend: r[2] }); }); },
+    settings: function () { return Promise.all([api('settings'), api('autofix/spend')]).then(function (r) { r[0].spend = r[1]; return viewSettings(r[0]); }); },
   };
   function load() {
     var view = S.view;
@@ -456,7 +504,8 @@
       if (!me.role) return denied();
       loading();
       return load().then(function () { if (parts[0] !== 'autofix') return;
-        if (parts[1] === 'feedback' && parts[2]) openAutofixByFeedback(Number(parts[2])); // link from the feedback admin
+        if (parts[1] === 'spend') { var sp = document.getElementById('spend'); if (sp) { sp.scrollIntoView(); sp.setAttribute('tabindex', '-1'); sp.focus(); } } // link in budget alerts
+        else if (parts[1] === 'feedback' && parts[2]) openAutofixByFeedback(Number(parts[2])); // link from the feedback admin
         else if (parts[1]) openAutofix(Number(parts[1]));
       });
     }).catch(function (er) { app.replaceChildren(h('div', { class: 'denied' }, [h('div', {}, [h('h1', { text: 'Can\'t load' }), h('p', { text: er.message })])])); });
