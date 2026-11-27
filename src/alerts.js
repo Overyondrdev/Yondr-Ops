@@ -27,10 +27,21 @@ export const EVENTS = {
   autofix_budget_approved: { label: 'Auto-fix spend approved', severity: 'info', ownerForced: true, ignoreQuiet: true, help: 'An owner approved more auto-fix spend for this month.' },
   feedback_critical: { label: 'Critical feedback', severity: 'high', help: 'Someone sent feedback marked critical.' },
   daily_digest: { label: 'Daily digest', severity: 'info', help: 'Every morning: open problems, incidents and backups of the last day.' },
+  // v2: catch problems before people notice (README "Errors", "Deploys", "Restore drill", "Keys", "Issues").
+  error_rate: { label: 'Server errors', severity: 'warning', help: 'A Worker answered more than 2 % of requests with an error in the last 15 minutes (high above 10 %).' },
+  client_errors_spike: { label: 'Browser errors spike', severity: 'warning', help: 'The feedback widget saw more JavaScript errors on one project than usual (over 20 in 15 minutes by default).' },
+  deploy_regression: { label: 'Deploy made things worse', severity: 'high', help: 'Within 15 minutes of a new deployment, errors went up or a site check started failing. Owners can roll back in one click (Deploys).' },
+  rollback_done: { label: 'Rollback done', severity: 'warning', ownerForced: true, help: 'An owner rolled a Worker back to its previous version.' },
+  restore_drill_failed: { label: 'Restore drill failed', severity: 'high', ownerForced: true, help: 'The monthly test restore of a backup did not give back the same tables and rows.' },
+  key_expiring: { label: 'Key expiring', severity: 'warning', ownerForced: true, help: 'A key or token in the key calendar expires in 30 or 14 days, or today.' },
+  access_seats_used: { label: 'Access seats in use', severity: 'warning', help: 'Someone signed in through Cloudflare Access (costs a seat) instead of the Yondr sign-in.' },
+  issue_assigned: { label: 'Issue assigned to you', severity: 'info', personal: true, help: 'An issue in Ops was assigned to you. Always sent to the assignee; nobody else gets it.' },
+  issue_critical: { label: 'New critical issue', severity: 'critical', ownerForced: true, help: 'A critical issue was opened in Ops (by a person or automatically).' },
 };
 export const EVENT_TYPES = Object.keys(EVENTS);
 // What a new person is subscribed to by email unless the admin chooses otherwise.
-export const DEFAULT_EVENTS = ['site_down', 'site_exposed', 'deploy_failed', 'backup_failed', 'autofix_failed', 'autofix_reverted', 'feedback_critical', 'daily_digest'];
+export const DEFAULT_EVENTS = ['site_down', 'site_exposed', 'deploy_failed', 'backup_failed', 'autofix_failed', 'autofix_reverted', 'feedback_critical', 'daily_digest',
+  'deploy_regression', 'restore_drill_failed'];
 export const MIN_SEVERITY = { all: 'Everything', high: 'High and critical', critical: 'Critical only' };
 export const WEBHOOK_NAME = /^SLACK_WEBHOOK_[A-Z0-9_]{1,40}$/;
 
@@ -70,6 +81,7 @@ export function route(alert, { subscribers, subscriptions, owners = new Set(), n
   const critical = alert.severity === 'critical';
   for (const sub of subscriptions) {
     if (sub.event_type !== alert.type) continue;
+    if (EVENTS[alert.type] && EVENTS[alert.type].personal) continue; // only ever to the person concerned (dispatch with recipients)
     const s = byId.get(sub.subscriber_id);
     if (!s) continue;
     const who = sub.channel === 'slack' ? sub.webhook : s.email;
@@ -197,4 +209,18 @@ export async function dispatch(env, a, { settings, recipients = null, nowMs = Da
     catch (e) { out.failed++; await logAlert(db, { ...common, channel: 'slack', recipients: [hook], status: 'failed', error: e.message }); }
   }
   return out;
+}
+
+/**
+ * Send one alert to named people (e.g. the assignee of an issue), whatever their rules say, plus any Slack channel they
+ * route this alert type to. Logged like every other alert; the Alerts kill switch still applies.
+ */
+export async function dispatchTo(env, a, emails, opts = {}) {
+  const to = [...new Set((emails || []).map((e) => String(e).toLowerCase()).filter(Boolean))].sort();
+  if (!to.length) return { email: [], slack: [], sent: 0, failed: 0 };
+  const marks = to.map(() => '?').join(',');
+  const { results } = await env.DB.prepare(`SELECT DISTINCT s.webhook FROM subscriptions s JOIN subscribers p ON p.id = s.subscriber_id
+    WHERE s.event_type = ? AND s.channel = 'slack' AND p.active = 1 AND p.email IN (${marks})`).bind(a.type, ...to).all();
+  const slack = results.map((r) => r.webhook).filter((w) => WEBHOOK_NAME.test(w)).sort();
+  return dispatch(env, a, { ...opts, recipients: { email: to, slack, skipped: [] } });
 }

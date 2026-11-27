@@ -1,7 +1,8 @@
 // yondr-ops: monitoring, alerts, backups and the auto-fix log for the overyondrdev.com estate,
 // on https://ops.overyondrdev.com.
 //   /                   the ops dashboard (sign-in required; only feedback-tool admins/owners get in)
-//   /api/*              the dashboard API (admins; CSRF rules in ./http.js)
+//   /status             the staff status page (any signed-in @overyondr.com person; same app, read-only view)
+//   /api/*              the dashboard API (admins; staff only GET /api/me and GET /api/status/public; CSRF in ./http.js)
 //   POST /api/events, POST /api/autofix/events, POST /api/autofix/feedback, GET /api/autofix/config
 //                       server-to-server, authenticated by the X-Ops-Token header (./ingest.js)
 //   /brand/*, /robots.txt  public static files
@@ -12,15 +13,18 @@
 import { handleApi } from './api.js';
 import { currentUser, roleOf } from './auth.js';
 import { ingestAutofix } from './autofix.js';
-import { runBackups } from './backups.js';
 import { autofixConfig } from './budget.js';
+import { runDaily } from './daily.js';
 import { COMMON, csrfProblem, json } from './http.js';
+import { ingestClientErrors } from './errors.js';
 import { hasIngestToken, ingestEvent, TOKEN_ROUTES } from './ingest.js';
+import { touchSeen } from './people.js';
 import { runMonitor } from './monitor.js';
 import { triageFeedback } from './triage.js';
 import { runAutofix } from './verify.js';
 import { ensureSchema } from './schema.js';
 import { getSettings } from './settings.js';
+import { publicStatus } from './status.js';
 import { FILES } from './static.generated.js';
 import { loginUrl } from './yondr-session.js';
 
@@ -64,7 +68,9 @@ async function tokenRoute(request, env, key) {
     return json({ autofix_enabled: c.autofix_enabled, reason: c.reason });
   }
   const b = await request.json().catch(() => null);
-  const r = key === 'POST /api/events' ? await ingestEvent(env, b)
+  // Browser errors from the feedback widget share /api/events (type "client_errors"): src/errors.js.
+  const r = key === 'POST /api/events' && b && b.type === 'client_errors' ? await ingestClientErrors(env, b)
+    : key === 'POST /api/events' ? await ingestEvent(env, b)
     : key === 'POST /api/autofix/feedback' ? await triageFeedback(env, b)
     : await ingestAutofix(env, b);
   return json(r.body, r.status);
@@ -97,15 +103,19 @@ export default {
         if (problem) return json({ error: problem }, 403);
         const role = await roleOf(env, user.email);
         const route = path.slice('/api/'.length);
+        await ensureSchema(env.DB);
+        const seen = touchSeen(env.DB, user.email).catch(() => {});
+        if (ctx && ctx.waitUntil) ctx.waitUntil(seen); else await seen;
         if (!role) {
-          if (method === 'GET' && route === 'me') return json({ email: user.email, name: user.name, role: null });
+          // Every signed-in @overyondr.com person (staff) may read the status page; everything else is admins only.
+          if (method === 'GET' && route === 'me') return json({ email: user.email, name: user.name, role: null, staff: true });
+          if (method === 'GET' && route === 'status/public') return json(await publicStatus(env.DB));
           return json({ error: 'Admins only. Ask an owner to add you in the feedback tool (People).' }, 403);
         }
-        await ensureSchema(env.DB);
         return await handleApi(request, env, ctx, route, { ...user, role });
       }
       if (method !== 'GET' && method !== 'HEAD') return json({ error: 'Method not allowed' }, 405);
-      if (path === '/' || path === '/index.html') return serveFile(request, '/index.html');
+      if (path === '/' || path === '/index.html' || path === '/status') return serveFile(request, '/index.html');
       if (path === '/app.js' || path === '/app.css') return serveFile(request, path);
       return notFound();
     } catch (e) {
@@ -116,10 +126,10 @@ export default {
 
   async scheduled(controller, env, ctx) {
     const nowMs = controller.scheduledTime || Date.now();
-    const job = controller.cron === BACKUP_CRON ? runBackups(env, { nowMs })
+    const job = controller.cron === BACKUP_CRON ? runDaily(env, { nowMs })
       : controller.cron === AUTOFIX_CRON ? runAutofix(env, { nowMs })
       : runMonitor(env, { nowMs });
-    ctx.waitUntil(job.then((r) => console.log('cron', controller.cron, JSON.stringify(r && (r.results ? { ok: r.ok, failed: r.failed, deleted: r.deleted } : r))))
+    ctx.waitUntil(job.then((r) => console.log('cron', controller.cron, JSON.stringify(r && r.backups && r.backups.results ? { ...r, backups: { ok: r.backups.ok, failed: r.backups.failed, deleted: r.backups.deleted }, drill: r.drill && (r.drill.results ? { ok: r.drill.ok, failed: r.drill.failed } : r.drill) } : r)))
       .catch((e) => { console.error('cron failed', controller.cron, e && e.stack); throw e; }));
   },
 };

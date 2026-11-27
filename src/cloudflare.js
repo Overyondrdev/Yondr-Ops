@@ -6,8 +6,11 @@ import { ACCESS_BYPASS_APP, ACCOUNT_ID, BUILDS, EXPECTED_INVENTORY, GATED_HOSTS,
 
 const API = 'https://api.cloudflare.com/client/v4';
 
-async function cf(env, path) {
-  const res = await fetch(API + path, { headers: { authorization: `Bearer ${env.CF_API_TOKEN}` } });
+/** One Cloudflare API call. opts: { method, body, token } (token defaults to the read-only CF_API_TOKEN). */
+export async function cf(env, path, opts = {}) {
+  const headers = { authorization: `Bearer ${opts.token || env.CF_API_TOKEN}` };
+  if (opts.body !== undefined) headers['content-type'] = 'application/json';
+  const res = await fetch(API + path, { method: opts.method || 'GET', headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
   const body = await res.json().catch(() => ({}));
   if (!res.ok || body.success === false) {
     const msg = (body.errors || []).map((e) => e.message).join('; ') || `HTTP ${res.status}`;
@@ -16,7 +19,7 @@ async function cf(env, path) {
   return body;
 }
 
-async function cfList(env, path, pick = (b) => b.result) {
+export async function cfList(env, path, pick = (b) => b.result) {
   const out = [];
   for (let page = 1; page <= 20; page++) {
     const sep = path.includes('?') ? '&' : '?';
@@ -29,7 +32,7 @@ async function cfList(env, path, pick = (b) => b.result) {
   return out;
 }
 
-async function graphql(env, query, variables) {
+export async function graphql(env, query, variables) {
   const res = await fetch(`${API}/graphql`, {
     method: 'POST',
     headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, 'content-type': 'application/json' },
@@ -215,4 +218,29 @@ export async function buildForCommit(env, worker, sha, cache = new Map()) {
   } catch (e) {
     return { checked: false, reason: `Couldn't read Workers Builds: ${e.message}` };
   }
+}
+
+// --------------------------------------------------------------------------------------------- Access seats
+/** Seats in use from GET /accounts/<id>/access/users (Zero Trust users; access_seat = uses an Access seat). Pure. */
+export function evaluateSeats(users) {
+  const id = 'cf:access-seats';
+  const site = 'Cloudflare Access seats';
+  const seated = (users || []).filter((u) => u.access_seat === true);
+  if (!seated.length) return { id, site, ok: true, detail: `0 Access seats in use (${(users || []).length} people known to Zero Trust).` };
+  return { id, site, ok: false, event: 'access_seats_used', severity: 'warning', fingerprint: String(seated.length),
+    title: `${seated.length} Cloudflare Access seat${seated.length > 1 ? 's' : ''} in use`,
+    detail: `${seated.length} ${seated.length > 1 ? 'people use' : 'person uses'} an Access seat, so someone reached a host that is still behind Cloudflare Access instead of the Yondr sign-in. Find it in Zero Trust → Logs → Access and add the host to the Bypass app (docs/PLATFORM.md §3). Seats free up after a month of inactivity, or remove them in Zero Trust → Users.` };
+}
+
+export async function accessSeatsCheck(env) {
+  if (!env.CF_API_TOKEN) return skipped('cf:access-seats', 'Cloudflare Access seats', 'CF_API_TOKEN is not set.');
+  try { return evaluateSeats(await cfList(env, `/accounts/${ACCOUNT_ID}/access/users`)); }
+  catch (e) { return skipped('cf:access-seats', 'Cloudflare Access seats', `Couldn't read Zero Trust users (the token needs "Access: Users Read"): ${e.message}`); }
+}
+
+// --------------------------------------------------------------------------------------------- setup gaps
+/** Secret names (never values) bound to one Worker: GET .../workers/scripts/<name>/settings → bindings of type secret_text. */
+export async function workerSecretNames(env, worker) {
+  const body = await cf(env, `/accounts/${ACCOUNT_ID}/workers/scripts/${encodeURIComponent(worker)}/settings`);
+  return ((body.result && body.result.bindings) || []).filter((b) => b.type === 'secret_text' || b.type === 'secret_key').map((b) => b.name).sort();
 }

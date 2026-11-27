@@ -45,6 +45,7 @@ export async function* dumpDatabase(db, stats = { tables: 0, rows: 0 }) {
   yield `-- Backup by yondr-ops at ${new Date().toISOString()}\n-- Restore into an EMPTY database: wrangler d1 execute <db> --remote --file=<this file, unzipped>\nPRAGMA defer_foreign_keys = true;\n`;
   for (const t of objects.filter((o) => o.type === 'table')) {
     stats.tables++;
+    if (stats.perTable) stats.perTable[t.name] = 0;
     yield `\n${t.sql};\n`;
     let lastRowid = null;
     let offset = 0;
@@ -73,6 +74,7 @@ export async function* dumpDatabase(db, stats = { tables: 0, rows: 0 }) {
         lines.push(`INSERT INTO ${ident(t.name)} (${cols.map(ident).join(', ')}) VALUES (${cols.map((c) => sqlValue(row[c])).join(', ')});`);
       }
       stats.rows += rows.length;
+      if (stats.perTable) stats.perTable[t.name] += rows.length;
       yield lines.join('\n') + '\n';
       if (rows.length < PAGE) break;
     }
@@ -132,7 +134,7 @@ export async function backupOne(env, spec, day) {
   const raw = env[spec.binding];
   if (!raw) throw new Error(`Binding ${spec.binding} is missing.`);
   const db = readOnly(raw);
-  const stats = { tables: 0, rows: 0 };
+  const stats = { tables: 0, rows: 0, perTable: {} };
   const bytes = await gzipParts(dumpDatabase(db, stats));
   const key = `backups/${spec.name}/${day}.sql.gz`;
   await env.BACKUPS.put(key, bytes, {
@@ -155,8 +157,8 @@ export async function runBackups(env, { nowMs = Date.now(), force = false } = {}
     const now = new Date().toISOString();
     try {
       const r = await backupOne(env, spec, day);
-      await db.prepare(`INSERT INTO backups (db, day, object_key, status, bytes, tables, rows, duration_ms, pii, created_at)
-        VALUES (?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?)`).bind(spec.name, day, r.key, r.bytes, r.tables, r.rows, r.duration_ms, spec.pii ? 1 : 0, now).run();
+      await db.prepare(`INSERT INTO backups (db, day, object_key, status, bytes, tables, rows, duration_ms, pii, table_stats, created_at)
+        VALUES (?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?, ?)`).bind(spec.name, day, r.key, r.bytes, r.tables, r.rows, r.duration_ms, spec.pii ? 1 : 0, JSON.stringify(r.perTable || {}), now).run();
       results.push({ db: spec.name, ok: true, ...r });
     } catch (e) {
       console.error('backup failed', spec.name, e && e.stack);

@@ -10,6 +10,7 @@
 import { addEvent, alertFor, revertAutofix } from './autofix.js';
 import { AUTOFIX, AUTOFIX_TARGETS, GATE } from './checks.js';
 import { checkBudget } from './budget.js';
+import { watchDeploys } from './deploys.js';
 import { buildForCommit } from './cloudflare.js';
 import { gh } from './github.js';
 import { ensureSchema } from './schema.js';
@@ -161,5 +162,7 @@ export async function runAutofix(env, { nowMs = Date.now() } = {}) {
   const queue = await processQueue(env, { nowMs, settings });
   // Spending alerts that are due (the forecast changes with the date, not only when a cost arrives): src/budget.js.
   const budget = await checkBudget(env, settings, { nowMs }).catch((e) => { console.error('budget check failed', e && e.stack); return []; });
-  return { watch, queue, budget };
+  // Deploy watch (src/deploys.js): new deployments compared before/after for 15 minutes; own subrequest budget here.
+  const deploys = await watchDeploys(env, { nowMs, settings }).catch((e) => { console.error('deploy watch failed', e && e.stack); return null; });
+  return { watch, queue, budget, deploys };
 }

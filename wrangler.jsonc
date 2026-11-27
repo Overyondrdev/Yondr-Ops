@@ -10,8 +10,10 @@
   "build": { "command": "node scripts/build-static.mjs", "watch_dir": "public" },
   "observability": { "enabled": true },
   "triggers": {
-    // Every 5 minutes: monitoring (src/monitor.js). Every 5 minutes, 2 minutes later: auto-fix queue, watch and
-    // verification (src/verify.js; AUTOFIX_CRON in src/index.js). 03:17 UTC: backups (src/backups.js; BACKUP_CRON).
+    // Every 5 minutes: monitoring incl. server errors (src/monitor.js). Every 5 minutes, 2 minutes later: auto-fix queue,
+    // watch and verification, and the deploy watch (src/verify.js, src/deploys.js; AUTOFIX_CRON in src/index.js).
+    // 03:17 UTC: backups, then the daily jobs: restore drill on the 1st, key expiry, quarterly access review, retention
+    // (src/daily.js; BACKUP_CRON). Keep it at 3 crons (Workers Free: 5 per account).
     "crons": ["*/5 * * * *", "2-59/5 * * * *", "17 3 * * *"]
   },
   "d1_databases": [
@@ -22,7 +24,15 @@
     { "binding": "ADS_DB", "database_name": "yondr-ad-portal-db", "database_id": "dfdcc2cc-4505-4ff7-944a-1fcd52abb04d" },
     { "binding": "REQUESTS_DB", "database_name": "yondr-marketing-requests-db", "database_id": "78cc06d7-c778-47eb-b630-6b9b0da5c43c" },
     // Client names and postal addresses (personal data): shorter backup retention, owners-only backup download.
-    { "binding": "CARDS_DB", "database_name": "yondr-christmas-cards", "database_id": "85da3dd4-e124-4087-a369-d48647053be3" }
+    { "binding": "CARDS_DB", "database_name": "yondr-christmas-cards", "database_id": "85da3dd4-e124-4087-a369-d48647053be3" },
+    // Scratch database for the monthly restore drill (src/drill.js). The ONLY database ops ever drops tables in; it
+    // holds nothing of value (personal data is dropped again straight after each drill).
+    { "binding": "DRILL_DB", "database_name": "yondr-ops-restore-drill", "database_id": "456502b9-794b-4e3f-8263-b0f11f6868d4" }
+  ],
+  // The feedback tool's Worker, for People & permissions: role changes go through ITS admin API with the signed-in
+  // person's own session (src/people.js). A service binding: no public egress, no same-zone fetch loop.
+  "services": [
+    { "binding": "FEEDBACK", "service": "yondr-feedback" }
   ],
   "r2_buckets": [
     // Nightly backups (create it first: README "First deploy").
@@ -38,8 +48,9 @@
     "EMAIL_FROM_NAME": "Yondr Ops",
     // cloudflare | resend | off (the owner can override it in Settings).
     "EMAIL_TRANSPORT": "resend"
-    // Secrets (npx wrangler secret put NAME; README "Secrets"): CF_API_TOKEN, GITHUB_TOKEN, OPS_INGEST_TOKEN,
-    // RESEND_API_KEY (only for the resend transport), SLACK_WEBHOOK_<NAME> (one per Slack channel).
+    // Secrets (npx wrangler secret put NAME; README "Secrets"): CF_API_TOKEN, CF_DEPLOY_TOKEN (rollback only),
+    // GITHUB_TOKEN, OPS_INGEST_TOKEN, RESEND_API_KEY (only for the resend transport), SLACK_WEBHOOK_<NAME> (one per
+    // Slack channel).
   },
   // Platform rule: no public *.workers.dev or preview URLs; the tool lives only on its custom domain.
   "workers_dev": false,
