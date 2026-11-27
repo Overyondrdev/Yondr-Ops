@@ -26,7 +26,7 @@ Platform rules (sign-in, hosts, deploy lessons) live in `Overyondrdev/overyondr-
 | `src/state.js` | State machine: alert on change, resolved alerts, critical reminders, mutes, incident log |
 | `src/monitor.js` | The 5-minute run |
 | `src/alerts.js` | Alert types, routing (severity, quiet hours, owners), message text, Slack, alert log |
-| `src/email.js` | Email transports: Cloudflare Email Service or Resend |
+| `src/email.js` | Email transports: Resend (standard) or Cloudflare Email Service |
 | `src/digest.js` | Daily digest and weekly backup summary |
 | `src/backups.js` | Nightly D1 → R2 backups and retention |
 | `src/autofix.js`, `src/github.js` | Auto-fix log, ingest, one-click revert via the GitHub API |
@@ -141,14 +141,12 @@ people route to it.
 
 ### Email transports
 
-Chosen by the `email_transport` setting (Settings), else the `EMAIL_TRANSPORT` variable (`cloudflare`):
+**Resend is the standard for all email on overyondrdev.com (owner decision, 27 Nov 2026).** Chosen by the
+`email_transport` setting (Settings), else the `EMAIL_TRANSPORT` variable (`resend`):
 
-- **`cloudflare`**: Cloudflare Email Service, `send_email` binding `EMAIL` (as Christmas cards does), from
-  `alerts@overyondrdev.com` ("Yondr Ops"). `overyondrdev.com` must be onboarded in **Compute → Email Service → Email
-  Sending** (it already is for `cards@`; the `cf-bounce` records exist). Sending to *any* address needs **Workers Paid**;
-  on Workers Free only *verified destination addresses* (Email Routing → Destination addresses) receive mail.
-- **`resend`**: Resend API with the `RESEND_API_KEY` secret (as marketing requests does; `overyondrdev.com` is verified
-  in Resend). Sender is the same `alerts@overyondrdev.com`.
+- **`resend`** (default): Resend API with the `RESEND_API_KEY` secret (`overyondrdev.com` is verified in Resend), from
+  `alerts@overyondrdev.com` ("Yondr Ops").
+- **`cloudflare`**: Cloudflare Email Service. Not configured (no `send_email` binding); kept only as a fallback option.
 - **`off`**: nothing is emailed (deliveries are logged as failed with the reason). Slack still works.
 
 One email per recipient (nobody sees the others' addresses).
@@ -292,9 +290,8 @@ plain-text variables.
 1. **D1**: `npx wrangler d1 create yondr-ops` → copy the `database_id` into `wrangler.jsonc` (replacing
    `TO-BE-CREATED`) in a PR. The schema is created automatically on first use.
 2. **R2**: `npx wrangler r2 bucket create yondr-ops-backups` (private; no public access, no custom domain).
-3. **Email**: confirm `overyondrdev.com` is onboarded in Compute → Email Service → Email Sending (it is, for `cards@`);
-   nothing else to verify for `alerts@overyondrdev.com`. On Workers Free, add each recipient as a verified destination
-   address, or use `EMAIL_TRANSPORT=resend` with `RESEND_API_KEY`. DMARC is `p=reject`, so don't send from another domain.
+3. **Email**: set the `RESEND_API_KEY` secret (Resend → API Keys, sending access, domain `overyondrdev.com`). DMARC is
+   `p=reject`, so never send from another domain.
 4. **Secrets**: as in the table above (`CF_API_TOKEN`, `OPS_INGEST_TOKEN` at least; `GITHUB_TOKEN` before the first
    revert; Slack webhooks as wanted).
 5. **Deploy**: `npm ci && npm run deploy` (creates the Worker, the `ops.overyondrdev.com` custom domain and both crons).

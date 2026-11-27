@@ -6,7 +6,7 @@ export const SETTINGS = {
   backups_enabled: { type: 'bool', default: true, label: 'Nightly backups', help: 'Back up every database to R2 at 03:17 UTC.' },
   autofix_enabled: { type: 'bool', default: false, label: 'Auto-fix engine', help: 'Lets the future auto-fix engine work on feedback (it reads GET /api/autofix/config). Reverts work either way.' },
   email_transport: { type: 'enum', values: ['cloudflare', 'resend', 'off'], default: null, label: 'Email transport',
-    help: 'cloudflare = Cloudflare Email Service (send_email binding); resend = Resend (RESEND_API_KEY secret); off = no email. Empty = the EMAIL_TRANSPORT variable.' },
+    help: 'resend = Resend (RESEND_API_KEY secret; the standard for all overyondrdev.com email); off = no email; cloudflare = Cloudflare Email Service (needs a send_email binding, not configured). Empty = the EMAIL_TRANSPORT variable (resend).' },
   realert_minutes: { type: 'int', min: 15, max: 1440, default: 60, label: 'Critical reminder (minutes)', help: 'While a critical problem lasts, remind people this often.' },
   event_dedupe_minutes: { type: 'int', min: 1, max: 1440, default: 60, label: 'Duplicate window (minutes)', help: 'The same event from another system within this window is logged but not sent again.' },
   daily_digest_hour_utc: { type: 'int', min: 0, max: 23, default: 8, label: 'Daily digest hour (UTC)', help: 'The daily summary goes out at the first check after this hour.' },
@@ -66,5 +66,5 @@ export async function setInternal(db, key, value) {
 
 /** Which email transport to use: the setting, else the EMAIL_TRANSPORT variable, else Cloudflare. */
 export function emailTransport(settings, env) {
-  return settings.email_transport || env.EMAIL_TRANSPORT || 'cloudflare';
+  return settings.email_transport || env.EMAIL_TRANSPORT || 'resend';
 }

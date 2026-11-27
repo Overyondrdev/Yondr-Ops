@@ -27,8 +27,6 @@
     // Nightly backups (create it first: README "First deploy").
     { "binding": "BACKUPS", "bucket_name": "yondr-ops-backups" }
   ],
-  // Cloudflare Email Service: alert emails from EMAIL_FROM (overyondrdev.com must be onboarded in Email Sending).
-  "send_email": [{ "name": "EMAIL" }],
   "vars": {
     // Yondr Google sign-in (auth.overyondrdev.com): public key of the shared session cookie. Safe to commit.
     "YONDR_AUTH_PUBLIC_JWK": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"BpCjLJMykOsJbtPTm63rdbw2BzRUTNTz3jj9LWqK6AM\",\"y\":\"RyW0y7Dki1BQ6GnYdD-4FPovGYfoaMmDgr21lNU7xXQ\",\"kid\":\"yondr-2026-11-26-a3a7e6\"}",
@@ -36,7 +34,7 @@
     "EMAIL_FROM": "alerts@overyondrdev.com",
     "EMAIL_FROM_NAME": "Yondr Ops",
     // cloudflare | resend | off (the owner can override it in Settings).
-    "EMAIL_TRANSPORT": "cloudflare"
+    "EMAIL_TRANSPORT": "resend"
     // Secrets (npx wrangler secret put NAME; README "Secrets"): CF_API_TOKEN, GITHUB_TOKEN, OPS_INGEST_TOKEN,
     // RESEND_API_KEY (only for the resend transport), SLACK_WEBHOOK_<NAME> (one per Slack channel).
   },
