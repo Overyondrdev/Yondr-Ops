@@ -15,15 +15,13 @@ test('retention: daily for 30 days, the 1st of the month for 12 months, today al
   const today = '2026-11-27';
   const keys = [key('yondr-feedback', '2026-11-27'), key('yondr-feedback', '2026-10-29'), key('yondr-feedback', '2026-10-28'),
     key('yondr-feedback', '2026-10-01'), key('yondr-feedback', '2025-12-01'), key('yondr-feedback', '2025-11-01'), 'backups/other/notes.txt'];
-  const del = planRetention(keys, today, { retentionDays: 30, monthlyMonths: 12, piiDays: 30, pii: new Set() });
+  const del = planRetention(keys, today, { retentionDays: 30, monthlyMonths: 12 });
   assert.deepEqual(del.sort(), [key('yondr-feedback', '2025-11-01'), key('yondr-feedback', '2026-10-28')].sort());
 });
 
-test('retention: personal-data databases lose every backup (monthly ones too) after the PII setting', () => {
-  const pii = new Set(['yondr-christmas-cards']);
-  const keys = [key('yondr-christmas-cards', '2026-11-20'), key('yondr-christmas-cards', '2026-11-01'), key('yondr-christmas-cards', '2026-10-01')];
-  assert.deepEqual(planRetention(keys, '2026-11-27', { piiDays: 30, pii }), [key('yondr-christmas-cards', '2026-10-01')]);
-  assert.deepEqual(planRetention(keys, '2026-11-27', { piiDays: 7, pii }).sort(), [key('yondr-christmas-cards', '2026-10-01'), key('yondr-christmas-cards', '2026-11-01'), key('yondr-christmas-cards', '2026-11-20')].sort());
+test('retention: personal-data databases are kept like every other database (owner: addresses are kept)', () => {
+  const keys = [key('yondr-christmas-cards', '2026-11-20'), key('yondr-christmas-cards', '2026-11-01'), key('yondr-christmas-cards', '2026-10-01'), key('yondr-christmas-cards', '2026-10-15')];
+  assert.deepEqual(planRetention(keys, '2026-11-27'), [key('yondr-christmas-cards', '2026-10-15')]);
 });
 
 test('SQL values are escaped', () => {
@@ -78,7 +76,7 @@ test('nightly run: every database to R2, logged; a failure alerts owners/subscri
   assert.equal(r.failed, 1);
   assert.ok(env.BACKUPS.map.has('backups/yondr-christmas-cards/2026-11-27.sql.gz'));
   assert.ok(env.BACKUPS.map.has('backups/yondr-feedback/2026-09-01.sql.gz'));
-  assert.ok(!env.BACKUPS.map.has('backups/yondr-christmas-cards/2026-09-01.sql.gz'));
+  assert.ok(env.BACKUPS.map.has('backups/yondr-christmas-cards/2026-09-01.sql.gz')) // monthly kept: personal-data DBs follow normal retention;
   const cards = await env.DB.prepare("SELECT * FROM backups WHERE db = 'yondr-christmas-cards'").first();
   assert.equal(cards.pii, 1);
   assert.equal(cards.rows, 1);

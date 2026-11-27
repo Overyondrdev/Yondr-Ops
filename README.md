@@ -231,9 +231,9 @@ Other tools' databases are bound here but **only read**: every query goes throug
 which refuses anything but `SELECT`, and `npm run check` fails if code uses those bindings without it. Ops never
 deletes live data.
 
-**Retention** (Settings, owners): daily backups 30 days; the backup of the **1st of each month 12 months**; backups of
-**personal-data** databases (Christmas cards) are deleted after **30 days** (`pii_backup_retention_days`), monthly
-ones included. Only files under `backups/` matching the pattern are ever deleted. Each run is logged (size, tables, rows,
+**Retention** (Settings, owners): daily backups 30 days; the backup of the **1st of each month 12 months**, the same for
+every database. **Personal-data** databases (Christmas cards: client addresses, which are kept and curated per rep) are
+backed up the same way; only owners can download them. Only files under `backups/` matching the pattern are ever deleted. Each run is logged (size, tables, rows,
 duration, error); a failure sends `backup_failed`; Mondays send `backup_ok_weekly_digest`.
 
 **Download**: Backups tab → *Download* (admins; streamed from R2; logged). Christmas-cards backups: **owners only**.

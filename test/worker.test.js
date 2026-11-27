@@ -135,9 +135,9 @@ test('settings: owners only, validated; secrets reported as set/not set, never t
   assert.equal((await call('/api/settings', { method: 'PATCH', body: { alerts_enabled: false } })).status, 403);
   assert.equal((await call('/api/settings', { method: 'PATCH', as: OWNER, body: { realert_minutes: 1 } })).status, 422);
   assert.equal((await call('/api/settings', { method: 'PATCH', as: OWNER, body: { email_transport: 'pigeon' } })).status, 422);
-  const ok = await call('/api/settings', { method: 'PATCH', as: OWNER, body: { autofix_enabled: true, pii_backup_retention_days: 14, email_transport: 'resend' } });
+  const ok = await call('/api/settings', { method: 'PATCH', as: OWNER, body: { autofix_enabled: true, backup_retention_days: 14, email_transport: 'resend' } });
   assert.equal(ok.status, 200);
-  assert.equal(ok.data.settings.pii_backup_retention_days, 14);
+  assert.equal(ok.data.settings.backup_retention_days, 14);
   const s = await call('/api/settings');
   assert.equal(s.data.secrets.OPS_INGEST_TOKEN, true);
   assert.equal(s.data.secrets.GITHUB_TOKEN, false);

@@ -12,8 +12,6 @@ export const SETTINGS = {
   daily_digest_hour_utc: { type: 'int', min: 0, max: 23, default: 8, label: 'Daily digest hour (UTC)', help: 'The daily summary goes out at the first check after this hour.' },
   backup_retention_days: { type: 'int', min: 7, max: 365, default: 30, label: 'Keep daily backups (days)', help: 'Older daily backups are deleted.' },
   backup_monthly_months: { type: 'int', min: 0, max: 36, default: 12, label: 'Keep monthly backups (months)', help: 'The backup of the 1st of each month is kept this long.' },
-  pii_backup_retention_days: { type: 'int', min: 1, max: 365, default: 30, label: 'Keep personal-data backups (days)',
-    help: 'Backups of databases holding personal data (Christmas cards addresses) are deleted after this many days, monthly ones included. Live data is never touched.' },
 };
 
 export function parseValue(def, raw) {

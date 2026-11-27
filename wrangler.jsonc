@@ -15,7 +15,7 @@
   },
   "d1_databases": [
     // Ops' own data. Create it first (README "First deploy") and replace TO-BE-CREATED with its id.
-    { "binding": "DB", "database_name": "yondr-ops", "database_id": "TO-BE-CREATED" },
+    { "binding": "DB", "database_name": "yondr-ops", "database_id": "c724f62c-94f2-4fce-b69c-f953ff0ee37d" },
     // Other tools' databases: READ ONLY by code (src/readonly.js). FEEDBACK_DB also holds the one admin list.
     { "binding": "FEEDBACK_DB", "database_name": "yondr-feedback", "database_id": "d1284d94-c7e8-4b9e-9526-b108c8425d87" },
     { "binding": "ADS_DB", "database_name": "yondr-ad-portal-db", "database_id": "dfdcc2cc-4505-4ff7-944a-1fcd52abb04d" },

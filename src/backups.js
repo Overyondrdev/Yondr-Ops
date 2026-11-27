@@ -1,8 +1,9 @@
 // Nightly D1 backups to R2 (bucket yondr-ops-backups, binding BACKUPS), 03:17 UTC.
 // Each database becomes one gzip'd SQL file: backups/<db>/<YYYY-MM-DD>.sql.gz — the schema from sqlite_master and
 // every row as INSERT statements, restorable with `wrangler d1 execute <db> --remote --file=<file>.sql` (README "Restore").
-// Retention: daily backups for backup_retention_days, the 1st of each month for backup_monthly_months; backups of
-// databases with personal data (pii) are deleted after pii_backup_retention_days, monthly ones included.
+// Retention: daily backups for backup_retention_days, the 1st of each month for backup_monthly_months — the same for
+// every database. Databases with personal data (pii, e.g. Christmas-card client addresses, which the owner wants
+// kept and curated per rep) are backed up like the rest; only their downloads are limited to owners.
 // This file only ever READS the databases it backs up (readOnly wrapper). It never deletes live data.
 import { dispatch } from './alerts.js';
 import { weeklyBackupDigest } from './digest.js';
@@ -97,9 +98,9 @@ function monthsBetween(a, b) { return (Number(b.slice(0, 4)) - Number(a.slice(0,
  * Which backup files to delete. Pure.
  * @param keys   R2 keys (backups/<db>/<YYYY-MM-DD>.sql.gz; anything else is left alone)
  * @param today  YYYY-MM-DD (UTC)
- * @param opts   { retentionDays, monthlyMonths, piiDays, pii: Set<db name> }
+ * @param opts   { retentionDays, monthlyMonths }
  */
-export function planRetention(keys, today, { retentionDays = 30, monthlyMonths = 12, piiDays = 30, pii = PII_DATABASES } = {}) {
+export function planRetention(keys, today, { retentionDays = 30, monthlyMonths = 12 } = {}) {
   const del = [];
   for (const key of keys) {
     const m = KEY_RE.exec(key);
@@ -107,7 +108,6 @@ export function planRetention(keys, today, { retentionDays = 30, monthlyMonths =
     const [, db, day] = m;
     const age = daysBetween(day, today);
     if (age <= 0) continue; // today's (or a clock-skewed future) backup is always kept
-    if (pii.has(db)) { if (age >= piiDays) del.push(key); continue; }
     if (age < retentionDays) continue;
     if (day.endsWith('-01') && monthsBetween(day, today) < monthlyMonths) continue;
     del.push(key);
@@ -169,7 +169,7 @@ export async function runBackups(env, { nowMs = Date.now(), force = false } = {}
   let deleted = [];
   try {
     deleted = planRetention(await listKeys(env.BACKUPS), day, {
-      retentionDays: settings.backup_retention_days, monthlyMonths: settings.backup_monthly_months, piiDays: settings.pii_backup_retention_days,
+      retentionDays: settings.backup_retention_days, monthlyMonths: settings.backup_monthly_months,
     });
     for (let i = 0; i < deleted.length; i += 1000) await env.BACKUPS.delete(deleted.slice(i, i + 1000));
     const at = new Date().toISOString();
