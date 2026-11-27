@@ -1,0 +1,22 @@
+{
+  "name": "yondr-ops",
+  "version": "1.0.0",
+  "description": "Yondr ops: uptime and security monitoring with alerts, team-managed alert subscriptions, nightly D1 backups and the auto-fix log for the overyondrdev.com estate",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "node scripts/build-static.mjs",
+    "check": "npm run build && node scripts/check.mjs",
+    "test": "npm run build && node --test --no-warnings \"test/*.test.js\"",
+    "dev": "wrangler dev --local --test-scheduled --local-upstream localhost:8787",
+    "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "deploy": "npm run check && npm test && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}

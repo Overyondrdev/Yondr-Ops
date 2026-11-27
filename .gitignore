@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+src/static.generated.js
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+.DS_Store

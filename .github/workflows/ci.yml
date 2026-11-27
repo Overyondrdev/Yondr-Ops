@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least-privilege token for every job.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pin third-party actions to a commit SHA before going live (Dependabot keeps them current).
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check            # bundle public/, syntax, Wrangler safety rules, read-only foreign DBs, no personal emails/secrets
+      - run: npm test                 # unit + end-to-end tests (node --test)
+      - name: Bundle (wrangler deploy --dry-run)
+        run: npx wrangler deploy --dry-run --outdir .wrangler/dry-run
+      # Every site must use the same session verifier as the sign-in Worker.
+      - name: src/yondr-session.js matches auth/src/session.js
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/Overyondrdev/overyondr-website-v1/main/auth/src/session.js -o "$RUNNER_TEMP/session.js"
+          cmp "$RUNNER_TEMP/session.js" src/yondr-session.js || { echo "src/yondr-session.js differs from overyondr-website-v1/auth/src/session.js"; exit 1; }
+
+# Deploys are run with `npm run deploy` (see README), not by Actions, so no Cloudflare secrets are stored in GitHub.
