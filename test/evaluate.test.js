@@ -70,5 +70,7 @@ test('overyondr.com: Squarespace redirect is fine; anything else is a warning', 
   const moved = evaluatePublicSite(PUBLIC_SITE, { status: 200, server: 'cloudflare' });
   assert.equal(moved.event, 'config_drift');
   assert.equal(moved.severity, 'warning');
-  assert.equal(evaluatePublicSite(PUBLIC_SITE, { status: 301, location: 'https://www.overyondr.com/', server: 'cloudflare' }).ok, false);
+  // Seen from inside Cloudflare, Squarespace's redirect carries server "cloudflare": still the Squarespace site.
+  assert.equal(evaluatePublicSite(PUBLIC_SITE, { status: 301, location: 'https://www.overyondr.com/', server: 'cloudflare' }).ok, true);
+  assert.equal(evaluatePublicSite(PUBLIC_SITE, { status: 301, location: 'https://overyondr-website-v1.example/', server: 'cloudflare' }).ok, false);
 });

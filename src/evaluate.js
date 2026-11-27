@@ -58,12 +58,14 @@ function unexpected(base, check, r) {
     detail: `${check.url} answered ${r.status}${r.location ? ` (redirect to ${r.location})` : ''} instead of the usual answer.` };
 }
 
-/** overyondr.com must stay on Squarespace (301 to www, served by Squarespace) until the cutover. */
+/** overyondr.com must stay on Squarespace (a redirect to www.overyondr.com) until the cutover. The server header is
+ *  not reliable: from inside Cloudflare (this Worker's fetch) Squarespace's redirect arrives as server "cloudflare".
+ *  Our own Worker would answer overyondr.com directly with a page (200), never with this redirect. */
 export function evaluatePublicSite(cfg, r) {
   const base = { id: cfg.id, site: cfg.site };
   if (r.error || !r.status) return { ...base, ok: false, event: 'site_down', severity: 'high', title: 'overyondr.com is not responding', detail: `No answer from ${cfg.url} (${r.error || 'no response'}).` };
   if (r.status >= 500) return { ...base, ok: false, event: 'site_down', severity: 'high', title: 'overyondr.com is down', detail: `${cfg.url} answered with error ${r.status}.` };
-  if (REDIRECT.has(r.status) && cfg.location.test(r.location || '') && cfg.server.test(r.server || '')) {
+  if (REDIRECT.has(r.status) && cfg.location.test(r.location || '')) {
     return { ...base, ok: true, detail: 'Still served by Squarespace (redirects to www.overyondr.com), as expected before the cutover.' };
   }
   return { ...base, ok: false, event: 'config_drift', severity: 'warning', title: 'overyondr.com has changed',
