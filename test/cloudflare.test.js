@@ -62,3 +62,18 @@ test('usage checks: one unavailable GraphQL dataset is skipped without hiding th
   const none = await usageChecks({}, Date.now());
   assert.ok(none.every((x) => x.ok === null));
 });
+
+test('Access: hosts covered by their own Bypass app count; wildcard Allow apps never do', async () => {
+  const { evaluateAccess } = await import('../src/cloudflare.js');
+  const apps = [
+    { name: 'Main', destinations: [{ uri: 'a.example.com' }], policies: [{ decision: 'bypass' }] },
+    { name: 'Own', destinations: [{ uri: 'b.example.com' }], policies: [{ decision: 'bypass' }] },
+    { name: 'Wild', destinations: [{ uri: '*.example.com' }], policies: [{ decision: 'allow' }] },
+    { name: 'Allow', destinations: [{ uri: 'c.example.com' }], policies: [{ decision: 'allow' }] },
+  ];
+  const r = evaluateAccess(apps, ['a.example.com', 'b.example.com', 'c.example.com'], 'Main');
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /c\.example\.com/);
+  assert.doesNotMatch(r.detail, /b\.example\.com/);
+  assert.equal(evaluateAccess(apps, ['a.example.com', 'b.example.com'], 'Main').ok, true);
+});
