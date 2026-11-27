@@ -49,13 +49,14 @@ export const PUBLIC_SITE = {
 // (Pull-request preview builds are ignored: the website's PR preview build always fails by design.)
 export const BUILDS = { every: 5, workers: [
   { worker: 'overyondr-website-v1', branch: 'main' },
+  { worker: 'overyondr-website-v2', branch: 'main' },
   { worker: 'yondr-ad-portal', branch: 'main' },
   { worker: 'yondr-christmas-cards', branch: 'main' },
 ] };
 
 // What should exist in the account (docs/OPERATIONS.md section 1). New or missing = warning.
 export const EXPECTED_INVENTORY = { every: 60,
-  workers: ['overyondr-website-v1', 'yondr-feedback', 'yondr-auth', 'yondr-ad-portal', 'yondr-christmas-cards',
+  workers: ['overyondr-website-v1', 'overyondr-website-v2', 'yondr-feedback', 'yondr-auth', 'yondr-ad-portal', 'yondr-christmas-cards',
     'yondr-marketing-requests', 'yondr-ops'],
   d1: ['yondr-feedback', 'yondr-ad-portal-db', 'yondr-marketing-requests-db', 'yondr-christmas-cards', 'yondr-ops',
     'yondr-ops-restore-drill'],
@@ -101,7 +102,7 @@ export const PROJECT_REPOS = {
 // worker: the Workers Builds Worker whose production build of the fix is watched; gates: the GATE checks that must
 // stay fine for 15 minutes after it is live, or the fix is reverted automatically.
 export const AUTOFIX_TARGETS = {
-  'Overyondrdev/overyondr-website-v1': { workflow: true, worker: 'overyondr-website-v1', gates: ['gate:portal', 'gate:www', 'gate:v1', 'gate:v2'] },
+  'Overyondrdev/overyondr-website-v1': { workflow: true, worker: 'overyondr-website-v1', gates: ['gate:portal', 'gate:www', 'gate:v1'] },
   'Overyondrdev/overyondr-website-v2': { workflow: true, worker: 'overyondr-website-v2', gates: ['gate:v2'] },
   'Overyondrdev/digital-ads-portal': { workflow: false, worker: 'yondr-ad-portal', gates: ['gate:ads'] },
   'Overyondrdev/christmass-cards': { workflow: false, worker: 'yondr-christmas-cards', gates: ['gate:cards'] },
@@ -132,7 +133,8 @@ export function staticChecks() {
 //    a deploy that makes one of them fail is a regression (src/deploys.js). Same names as EXPECTED_INVENTORY.workers.
 // ---------------------------------------------------------------------------------------------------------------
 export const WORKERS = [
-  { worker: 'overyondr-website-v1', label: 'Website (portal, V1, V2)', gates: ['gate:portal', 'gate:www', 'gate:v1', 'gate:v2'] },
+  { worker: 'overyondr-website-v1', label: 'Website (portal, V1)', gates: ['gate:portal', 'gate:www', 'gate:v1'] },
+  { worker: 'overyondr-website-v2', label: 'Website V2', gates: ['gate:v2'] },
   { worker: 'yondr-feedback', label: 'Feedback tool', gates: ['gate:feedback-admin', 'gate:feedback-widget', 'gate:feedback-api'] },
   { worker: 'yondr-auth', label: 'Sign-in', gates: ['gate:auth'] },
   { worker: 'yondr-ad-portal', label: 'Ad library', gates: ['gate:ads'] },
