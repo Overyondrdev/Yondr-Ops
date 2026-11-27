@@ -893,9 +893,28 @@
     settings: function () { return Promise.all([api('settings'), api('autofix/spend')]).then(function (r) { r[0].spend = r[1]; return viewSettings(r[0]); }); },
     audit: function () { return api('audit' + qs({ actor: S.auditActor, action: S.auditAction })).then(viewAudit); },
   };
+  // S.view comes from the URL hash: match it against fixed names, never use it as an object key (CodeQL).
+  function loaderFor(view) {
+    switch (view) {
+      case 'issues': return LOADERS.issues;
+      case 'status': return LOADERS.status;
+      case 'checks': return LOADERS.checks;
+      case 'incidents': return LOADERS.incidents;
+      case 'errors': return LOADERS.errors;
+      case 'deploys': return LOADERS.deploys;
+      case 'alerts': return LOADERS.alerts;
+      case 'backups': return LOADERS.backups;
+      case 'autofix': return LOADERS.autofix;
+      case 'people': return LOADERS.people;
+      case 'keys': return LOADERS.keys;
+      case 'settings': return LOADERS.settings;
+      case 'audit': return LOADERS.audit;
+      default: return LOADERS.overview;
+    }
+  }
   function load() {
     var view = S.view;
-    return LOADERS[view]().then(function (el) { if (S.view === view) shell(el); })
+    return loaderFor(view)().then(function (el) { if (S.view === view) shell(el); })
       .catch(function (er) { shell(h('div', {}, [head('Something went wrong'), h('div', { class: 'banner red', role: 'alert', text: er.message }), btn('Try again', load)])); });
   }
   function focusTarget(id) { var el = document.getElementById(id); if (el) { el.setAttribute('tabindex', '-1'); el.scrollIntoView(); el.focus(); } }
