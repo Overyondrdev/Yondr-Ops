@@ -1,0 +1,5 @@
+# Day-to-day changes (checks, alerts, dashboard) need no code-owner review, so PRs can merge once the "build" check
+# passes. Deploy config, CI and the shared sign-in verifier still need a web admin's review.
+/wrangler.jsonc          @Yondr-Chad
+/.github/                @Yondr-Chad
+/src/yondr-session.js    @Yondr-Chad
