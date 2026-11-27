@@ -39,7 +39,7 @@ export const GATED_HOSTS = [...new Set([...GATE.map((c) => new URL(c.url).hostna
 // ---------------------------------------------------------------------------------------------------------------
 export const PUBLIC_SITE = {
   id: 'public:overyondr.com', site: 'overyondr.com (public site)', url: 'https://overyondr.com/',
-  location: /^https:\/\/www\.overyondr\.com\/?$/, server: /squarespace/i,
+  location: /^https:\/\/www\.overyondr\.com\/?$/,
 };
 
 // ---------------------------------------------------------------------------------------------------------------
