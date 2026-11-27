@@ -108,7 +108,7 @@ With the `CF_API_TOKEN` secret (without it these show "not checked" and never al
 | Check | How often | Alert |
 | --- | --- | --- |
 | Latest Workers Builds deploy of `main` for `overyondr-website-v1`, `overyondr-website-v2`, `yondr-ad-portal`, `yondr-christmas-cards` (PR preview builds ignored) | 5 min | failed = **deploy failed** (high) |
-| Access app **"Yondr sites (Google sign-in)"** lists every gated host (incl. `ops.`) and has a Bypass policy | hourly | missing = configuration changed (warning: costs seats) |
+| Access app **"Yondr sites (Google sign-in)"** lists every gated host (incl. `ops.`) and has a Bypass policy; **no** Access app on overyondrdev.com (the `*.overyondrdev.com` catch-all included) has a non-Bypass policy (owner: no Access seats, ever) | hourly | missing host = configuration changed (warning); a seat-costing policy = configuration changed (**high**) |
 | Workers, D1, KV, R2 vs `EXPECTED_INVENTORY` (= OPERATIONS.md §1) | hourly | new or missing = configuration changed (warning) |
 | Today's usage (UTC): Workers requests (100k), D1 rows read (5M) / written (100k), Workers AI neurons (10k) | hourly | ≥ 70 % warning, ≥ 90 % high |
 
@@ -722,8 +722,8 @@ plain-text variables.
    revert; Slack webhooks as wanted).
 5. **Deploy**: `npm ci && npm run deploy` (creates the Worker, the `ops.overyondrdev.com` custom domain and both crons).
 6. **Sign-in**: add `ops.overyondrdev.com` to the Access application **"Yondr sites (Google sign-in)"** (Bypass), and a
-   line for it to `SITES` in `overyondr-website-v1/auth/src/pages.js`. Until then the wildcard Access app keeps it
-   behind Access (safe, but costs seats; ops itself will warn about it).
+   line for it to `SITES` in `overyondr-website-v1/auth/src/pages.js`. The catch-all `*.overyondrdev.com` Access app is
+   Bypass too (owner: no Access seats, ever), so the Worker's own sign-in check is the only lock.
 7. **Docs**: add the Worker, host, D1 `yondr-ops` and R2 `yondr-ops-backups` to `docs/OPERATIONS.md` §1 and
    `docs/PLATFORM.md` §1 in `overyondr-website-v1` (OPERATIONS.md §2 rule 5).
 8. **Check** in Incognito: `/` sends you to the sign-in page and back; a non-admin lands on the Status page (`/status`)
