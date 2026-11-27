@@ -49,6 +49,21 @@ for (const f of files.filter((f) => f.startsWith('src/') && f.endsWith('.js'))) 
   });
 }
 
+// 4a. The people directory (KV of the sign-in Worker) is only ever read: env.DIRECTORY only in src/directory.js, which
+//     may only call get/list on it (no put, delete or other writes).
+for (const f of files.filter((f) => f.startsWith('src/') && f.endsWith('.js'))) {
+  const text = readFileSync(join(ROOT, f), 'utf8');
+  if (f !== 'src/directory.js') {
+    if (/env\.DIRECTORY\b/.test(text.replace(/^\s*\/\/.*$/gm, '').replace(/env\.DIRECTORY\)/g, ''))) problems.push(`${f}: use src/directory.js to read the DIRECTORY KV (read-only)`);
+    continue;
+  }
+  text.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(/env\.DIRECTORY\.(\w+)/g)) if (!['get', 'list', 'getWithMetadata'].includes(m[1])) problems.push(`${f}:${i + 1}: env.DIRECTORY.${m[1]} — the directory KV is read-only here`);
+    if (/\.(put|delete)\(/.test(line)) problems.push(`${f}:${i + 1}: no writes in src/directory.js (the directory KV is read-only here)`);
+  });
+}
+if (!/"binding":\s*"DIRECTORY"/.test(wr)) problems.push('wrangler.jsonc: the read-only DIRECTORY KV binding (people directory) is missing');
+
 // 4b. Destructive SQL. DROP (tables, views, indexes, triggers) only in src/drill.js and only on the scratch database
 //     (the `drill` handle from env.DRILL_DB). DELETE only on ops' own bookkeeping tables listed here, never elsewhere.
 const DROP = /\bDROP\s+(\$\{|TABLE|VIEW|INDEX|TRIGGER)/i;

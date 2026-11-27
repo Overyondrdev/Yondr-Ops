@@ -1,9 +1,10 @@
 // The 5-minute monitoring run: signed-out gate checks, overyondr.com, Cloudflare API checks (each at its own
 // cadence), then the state machine and alerts. Also sends the daily digest once a day.
 import { dispatch } from './alerts.js';
-import { ACCESS, ACCESS_SEATS, BUILDS, ERRORS, EXPECTED_INVENTORY, GATE, PUBLIC_SITE, USAGE } from './checks.js';
+import { ACCESS, ACCESS_SEATS, BUILDS, DIRECTORY, ERRORS, EXPECTED_INVENTORY, GATE, PUBLIC_SITE, USAGE } from './checks.js';
 import { accessCheck, accessSeatsCheck, buildChecks, inventoryChecks, usageChecks } from './cloudflare.js';
 import { maybeDailyDigest } from './digest.js';
+import { directoryCheck } from './directory.js';
 import { errorChecks } from './errors.js';
 import { evaluateGate, evaluatePublicSite } from './evaluate.js';
 import { issueForIncident, resolveForIncident } from './issues.js';
@@ -61,6 +62,7 @@ export async function collect(env, nowMs, { force = false, probeFn = probe, extr
     ['usage', USAGE.every, () => usageChecks(env, nowMs)],
     ['errors', ERRORS.every, () => errorChecks(env, nowMs)],
     ['seats', ACCESS_SEATS.every, () => accessSeatsCheck(env).then((r) => [r])],
+    ['directory', DIRECTORY.every, () => directoryCheck(env, nowMs).then((r) => [r])],
   ];
   for (const [group, every, run] of groups) {
     if (await due(db, group, every, nowMs, force)) {

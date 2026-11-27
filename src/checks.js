@@ -60,11 +60,15 @@ export const EXPECTED_INVENTORY = { every: 60,
     'yondr-marketing-requests', 'yondr-ops'],
   d1: ['yondr-feedback', 'yondr-ad-portal-db', 'yondr-marketing-requests-db', 'yondr-christmas-cards', 'yondr-ops',
     'yondr-ops-restore-drill'],
-  kv: ['yondr-feedback-screenshots'],
+  kv: ['yondr-feedback-screenshots', 'yondr-directory'],
   r2: ['yondr-ad-portal-assets', 'yondr-marketing-requests-files', 'yondr-brand-public', 'yondr-ops-backups'],
 };
 
 export const ACCESS = { every: 60 };
+
+// The people directory (yondr-auth's KV `yondr-directory`, synced 4 times a day; src/directory.js). Read through the
+// read-only-by-code DIRECTORY binding. No successful sync for staleHours = warning.
+export const DIRECTORY = { every: 60, staleHours: 13 };
 
 // Daily usage against the Workers FREE plan limits (UTC day). Warning at 70 %, high at 90 %.
 export const USAGE = { every: 60, warnAt: 0.7, highAt: 0.9, limits: {
