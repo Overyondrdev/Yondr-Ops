@@ -82,3 +82,15 @@ test('the message is plain: what, which site, since when, what was done, a link'
   const x = renderAlert({ type: 'feedback_critical', severity: 'high', title: '<img src=x onerror=alert(1)>' });
   assert.doesNotMatch(x.html, /<img src=x/);
 });
+
+test('subscribers: outside addresses are owners-only and marked external', async () => {
+  const { validateSubscriber } = await import('../src/api.js');
+  const env = { ALLOWED_EMAIL_DOMAINS: 'overyondr.com' };
+  assert.ok(validateSubscriber({ email: 'name@example.com' }, env, { creating: true }).error, 'admin cannot add an outside address');
+  const o = validateSubscriber({ email: 'name@example.com' }, env, { creating: true, owner: true });
+  assert.equal(o.error, undefined);
+  assert.equal(o.fields.external, true);
+  const w = validateSubscriber({ email: 'you@overyondr.com' }, env, { creating: true });
+  assert.equal(w.fields.external, undefined);
+  assert.ok(validateSubscriber({ email: 'not-an-email' }, env, { creating: true, owner: true }).error);
+});

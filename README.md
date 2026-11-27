@@ -161,7 +161,9 @@ to the dashboard. Subjects look like `Website V2 is open to the public [Critical
 
 ### Adding a person (admins)
 
-Dashboard → **Alerts** → *Add a person*: their `@overyondr.com` address and name → **Add**. They start with the usual
+Dashboard → **Alerts** → *Add a person*: their `@overyondr.com` address and name → **Add**. **Owners** can also add an
+outside address (e.g. a personal inbox while company mail filtering is being set up): it receives alert emails only and
+never gets sign-in or any access; the audit log marks it `external`. They start with the usual
 email alerts (table above); the editor opens so you can change them. In the editor:
 
 - **Send them**: everything / high and critical / critical only.
