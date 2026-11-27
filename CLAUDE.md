@@ -14,6 +14,8 @@ sign-in, hosts, Access, DNS or deploys.
 | `src/state.js`, `src/monitor.js` | State machine (alert on change, reminders, mutes, incidents); the 5-minute run |
 | `src/alerts.js`, `src/email.js`, `src/digest.js` | Alert types, routing, message text, delivery and log; digests |
 | `src/backups.js` | Nightly D1 → R2 backups, retention |
+| `src/triage.js`, `src/classify.js` | Auto-fix triage (owner's rules: only objective bugs), Workers AI classifier, the GitHub issue |
+| `src/verify.js` | Auto-fix watch: PR backstop, deploy + site verification, automatic revert (own cron) |
 | `src/autofix.js`, `src/github.js` | Auto-fix log and one-click revert |
 | `src/ingest.js` | Token endpoints (`X-Ops-Token`) |
 | `src/api.js`, `src/index.js`, `src/http.js`, `src/auth.js` | Dashboard API, routing and sign-in gate, CSRF, roles |
@@ -25,7 +27,7 @@ sign-in, hosts, Access, DNS or deploys.
 | `test/` | `node --test`; `test/helpers.js` fakes D1 (`node:sqlite`), R2, the email binding and signs sessions |
 
 ## Rules
-- **Sign-in on everything** except `/brand/*`, `/robots.txt` and the three token endpoints. Pages → 302 to
+- **Sign-in on everything** except `/brand/*`, `/robots.txt` and the four token endpoints. Pages → 302 to
   `loginUrl(request)`, API → 401 JSON. Admins only (feedback tool's `admins` table; there is ONE admin list — never add
   a second). No Cloudflare Access fallback. `workers_dev` and `preview_urls` stay `false`.
 - **Keep `src/yondr-session.js` byte-identical** to `overyondr-website-v1/auth/src/session.js`. When that file
@@ -43,6 +45,9 @@ sign-in, hosts, Access, DNS or deploys.
 - **Never commit secrets, webhook URLs or personal email addresses** (this repository is public). Tests and examples
   use the fictional people allowed in `scripts/check.mjs`. `DEV_EMAIL` only in `.dev.vars`. No names or emails in
   revert commits/PRs either.
+- **Auto-fix** follows the owner's rules in `docs/OPERATIONS.md` §6.3 (README "Auto-fix"): only type bug, only
+  objective (unsure = subjective = a person), kill switch `autofix_enabled` respected everywhere, no personal data in
+  GitHub issues. Keep the tests in `test/triage.test.js` and `test/verify.test.js`.
 - No runtime dependencies (ask first). `wrangler` is the only dev dependency. Plain JS.
 - Dashboard: accessible (keyboard, focus visible, labels), works at 375 px, `prefers-reduced-motion` respected,
   CSP-clean (no inline scripts or `style=` attributes). Brand look follows the feedback admin.

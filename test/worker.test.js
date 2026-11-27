@@ -192,8 +192,12 @@ test('auto-fix log: ingest creates and updates with an append-only timeline and 
   await ingest('/api/autofix/events', { id, status: 'merged', pr_url: 'https://github.com/Overyondrdev/overyondr-website-v1/pull/99', merge_sha: SHA });
   const d = (await call(`/api/autofix/${id}`)).data.autofix;
   assert.equal(d.status, 'merged');
+  assert.ok(d.merged_at, 'merging starts the verification clock');
   assert.equal(d.events.length, 3);
-  assert.deepEqual(env.EMAIL.sent.map((m) => m.subject.split(':')[0]), ['Auto-fix started', 'Auto-fix merged']);
+  // "merged" is not announced: only a verified (live and checked) fix sends autofix_merged (src/verify.js).
+  assert.deepEqual(env.EMAIL.sent.map((m) => m.subject.split(':')[0]), ['Auto-fix started']);
+  await ingest('/api/autofix/events', { id, status: 'verified' });
+  assert.deepEqual(env.EMAIL.sent.map((m) => m.subject.split(':')[0]), ['Auto-fix started', 'Auto-fix live and verified']);
   assert.equal((await call('/api/autofix')).data.autofixes.length, 1);
 });
 

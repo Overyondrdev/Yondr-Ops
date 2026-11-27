@@ -6,7 +6,7 @@
   var SEV = { info: 'Info', warning: 'Warning', high: 'High', critical: 'Critical' };
   var AF_STATUS = { queued: 'Queued', triaged: 'Triaged', fixing: 'Fixing', pr_open: 'PR open', checks_failed: 'Checks failed', merged: 'Merged',
     deployed: 'Deployed', verified: 'Verified', failed: 'Failed', reverted: 'Reverted', rejected: 'Rejected' };
-  var S = { me: null, view: 'status', data: {}, drawer: null };
+  var S = { me: null, view: 'status', data: {}, drawer: null, afAll: false };
 
   // ------------------------------------------------------------- helpers
   function api(path, opts) {
@@ -304,13 +304,32 @@
         h('div', { class: 'act' }, [afPill(a.status)]),
       ]);
     });
-    return h('div', {}, [head('Auto-fixes', 'What the auto-fix engine did with feedback, step by step. Any merged fix can be reverted with one click.'),
-      h('div', { class: 'banner' + (d.config.autofix_enabled ? '' : ' red'), text: d.config.autofix_enabled ? 'The auto-fix engine is allowed to work (Settings).' : 'The auto-fix engine is switched off (Settings). Reverting still works.' }),
-      rows.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'empty', text: 'No auto-fixes yet. The engine will log its work here.' })]);
+    var all = h('input', { type: 'checkbox', id: 'af-all', checked: S.afAll, onchange: function () { S.afAll = all.checked; load(); } });
+    return h('div', {}, [head('Auto-fixes', 'Every feedback item the feedback tool reports is triaged here. Only objective bugs are fixed automatically (critical ones straight away, the others queued); subjective ones wait for a person. Every step is logged, and any merged fix can be reverted with one click.'),
+      h('div', { class: 'banner' + (d.config.autofix_enabled ? '' : ' red'), text: d.config.autofix_enabled ? 'The auto-fix engine is allowed to work (Settings): up to ' + d.config.autofix_max_per_hour + ' queued fixes an hour, critical ones straight away.' : 'The auto-fix engine is switched off (Settings): bugs are triaged and queued, nothing starts. Reverting still works.' }),
+      h('p', {}, [all, h('label', { for: 'af-all', text: ' Also show items that are not bugs (rejected)' })]),
+      rows.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'empty', text: 'Nothing here yet. Feedback appears once the feedback tool reports it.' })]);
   }
-  function openAutofix(id) {
-    api('autofix/' + id).then(function (r) {
-      var a = r.autofix;
+  function openAutofixByFeedback(fid) {
+    api('autofix/by-feedback/' + fid).then(function (r) { showAutofix(r.autofix); }).catch(fail);
+  }
+  function openAutofix(id) { api('autofix/' + id).then(function (r) { showAutofix(r.autofix); }).catch(fail); }
+  function classifyButtons(a) {
+    if (a.status !== 'queued' && a.status !== 'triaged') return null;
+    function mark(c) {
+      return function () {
+        return api('autofix/' + a.id + '/classify', { method: 'POST', body: { classification: c } })
+          .then(function (r) { toast('Marked ' + c + ': ' + (AF_STATUS[r.decision] || r.decision)); load().then(function () { openAutofix(a.id); }); }).catch(fail);
+      };
+    }
+    return h('p', { class: 'links' }, [
+      btn('Mark objective', mark('objective'), '', { disabled: a.classification === 'objective' && a.classified_by !== 'ai' ? true : undefined }),
+      btn('Mark subjective', mark('subjective'), '', { disabled: a.classification === 'subjective' && a.classified_by !== 'ai' ? true : undefined }),
+      h('span', { class: 'small muted', text: ' Objective bugs may be fixed automatically; subjective ones go to a person. Logged with your name.' })]);
+  }
+  function showAutofix(a) {
+    (function () {
+      var id = a.id;
       history.replaceState(null, '', '#autofix/' + id);
       var links = [];
       if (a.feedback_id) links.push(h('a', { class: 'btn', href: 'https://feedback.overyondrdev.com/admin#item-' + a.feedback_id, target: '_blank', rel: 'noopener' }, ['Feedback #' + a.feedback_id]));
@@ -322,15 +341,17 @@
       var content = h('div', {}, [
         h('div', { class: 'links' }, [afPill(a.status)].concat(links)),
         h('dl', { class: 'kv' }, [h('dt', { text: 'Repository' }), h('dd', { text: a.repo }), h('dt', { text: 'Project' }), h('dd', { text: a.project || '—' }),
-          h('dt', { text: 'Classification' }), h('dd', { text: (a.classification || '—') + (a.classification_reason ? ': ' + a.classification_reason : '') }),
+          h('dt', { text: 'Classification' }), h('dd', { text: (a.classification || '—') + (a.classified_by ? ' (' + (a.classified_by === 'ai' ? 'Workers AI' : a.classified_by) + ')' : '') + (a.classification_reason ? ': ' + a.classification_reason : '') }),
+          a.verify_detail ? h('dt', { text: 'Verification' }) : null, a.verify_detail ? h('dd', { text: a.verify_detail }) : null,
           h('dt', { text: 'Severity' }), h('dd', { text: a.severity || '—' }), h('dt', { text: 'Created' }), h('dd', { text: when(a.created_at) }),
           a.reverted_at ? h('dt', { text: 'Reverted' }) : null, a.reverted_at ? h('dd', { text: when(a.reverted_at) + ' by ' + a.reverted_by }) : null]),
+        classifyButtons(a),
         canRevert ? h('p', {}, [btn('Revert this fix', function () { revertDialog(a); }, 'danger')]) : null,
         h('h3', { class: 'group', text: 'Timeline (audit log)' }),
         h('ol', { class: 'timeline' }, a.events.map(function (e) { return h('li', {}, [h('div', {}, [h('div', { text: e.message }), h('div', { class: 'who', text: when(e.created_at) + ' · ' + e.actor + (e.status ? ' · ' + (AF_STATUS[e.status] || e.status) : '') })])]); })),
       ]);
       openDrawer('#' + a.id + ' ' + a.title, content);
-    }).catch(fail);
+    })();
   }
   function revertDialog(a) {
     dialog('Revert "' + a.title + '"?', h('div', {}, [
@@ -413,7 +434,7 @@
     incidents: function () { return api('incidents').then(viewIncidents); },
     alerts: function () { return Promise.all([api('people'), api('alerts')]).then(function (r) { S.data.people = r[0]; return viewAlerts({ people: r[0], log: r[1] }); }); },
     backups: function () { return api('backups').then(viewBackups); },
-    autofix: function () { return Promise.all([api('autofix'), api('autofix/config')]).then(function (r) { return viewAutofix({ autofixes: r[0].autofixes, config: r[1] }); }); },
+    autofix: function () { return Promise.all([api('autofix' + (S.afAll ? '' : '?status=active')), api('autofix/config')]).then(function (r) { return viewAutofix({ autofixes: r[0].autofixes, config: r[1] }); }); },
     settings: function () { return api('settings').then(viewSettings); },
   };
   function load() {
@@ -434,7 +455,10 @@
       S.me = me;
       if (!me.role) return denied();
       loading();
-      return load().then(function () { if (parts[0] === 'autofix' && parts[1]) openAutofix(Number(parts[1])); });
+      return load().then(function () { if (parts[0] !== 'autofix') return;
+        if (parts[1] === 'feedback' && parts[2]) openAutofixByFeedback(Number(parts[2])); // link from the feedback admin
+        else if (parts[1]) openAutofix(Number(parts[1]));
+      });
     }).catch(function (er) { app.replaceChildren(h('div', { class: 'denied' }, [h('div', {}, [h('h1', { text: 'Can\'t load' }), h('p', { text: er.message })])])); });
   }
   window.addEventListener('hashchange', function () { var v = location.hash.replace('#', '').split('/')[0]; if (LOADERS[v] && v !== S.view) { S.view = v; load(); } });

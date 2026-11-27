@@ -182,3 +182,37 @@ export async function usageChecks(env, nowMs = Date.now()) {
     catch (e) { return skipped(`cf:usage:${m}`, 'Cloudflare usage', `Couldn't read usage: ${e.message}`); }
   }));
 }
+
+// --------------------------------------------------------------------------------------------- auto-fix verification
+/**
+ * The production build of one commit. Pure. → { outcome: 'success' | 'failed' | 'running', created_on, build_uuid } or null
+ * (not built yet / not found).
+ */
+export function evaluateCommitBuild(builds, sha, branch = 'main') {
+  const mine = (builds || []).filter((b) => b.build_trigger_metadata && b.build_trigger_metadata.branch === branch &&
+    String(b.build_trigger_metadata.commit_hash || '').toLowerCase() === String(sha).toLowerCase())
+    .sort((a, b) => String(b.created_on).localeCompare(String(a.created_on)));
+  const b = mine[0];
+  if (!b) return null;
+  const outcome = !b.build_outcome ? 'running' : FAILED.has(b.build_outcome) ? 'failed' : IGNORED.has(b.build_outcome) ? 'cancelled' : 'success';
+  return { outcome, created_on: b.created_on || null, build_uuid: b.build_uuid || null };
+}
+
+/**
+ * The Workers Builds production build of `sha` for `worker`. Returns { checked: false, reason } when it can't be
+ * known (no CF_API_TOKEN, Worker not in the account, API error), else { checked: true, build } (build may be null).
+ * `cache` (a Map) avoids listing the account's scripts more than once per run.
+ */
+export async function buildForCommit(env, worker, sha, cache = new Map()) {
+  if (!env.CF_API_TOKEN) return { checked: false, reason: 'CF_API_TOKEN is not set, so the deploy could not be watched.' };
+  if (!worker) return { checked: false, reason: 'This repository has no Workers Builds deploy to watch.' };
+  try {
+    if (!cache.has('scripts')) cache.set('scripts', await cfList(env, `/accounts/${ACCOUNT_ID}/workers/scripts`));
+    const s = cache.get('scripts').find((x) => x.id === worker);
+    if (!s || !s.tag) return { checked: false, reason: `Worker ${worker} is not in the account (not deployed by Workers Builds yet).` };
+    const body = await cf(env, `/accounts/${ACCOUNT_ID}/builds/workers/${s.tag}/builds?per_page=25`);
+    return { checked: true, build: evaluateCommitBuild(body.result, sha) };
+  } catch (e) {
+    return { checked: false, reason: `Couldn't read Workers Builds: ${e.message}` };
+  }
+}

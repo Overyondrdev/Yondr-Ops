@@ -9,7 +9,9 @@ Monitoring, alerts, backups and the auto-fix log for Yondr's `overyondrdev.com` 
 - **Alerts** the right people by email and Slack, only when something changes (plus an hourly reminder while a critical
   problem lasts), with a plain explanation and a link to the dashboard. Admins add people and choose what each gets.
 - **Backs up** every D1 database to R2 every night (03:17 UTC), with retention rules and a restore procedure.
-- **Logs auto-fixes** (the engine comes later) step by step, with a one-click **Revert** that opens a revert pull request.
+- **Runs the auto-fix engine**: triages every feedback item (only objective bugs are fixed automatically), opens a
+  GitHub issue that the repository's Claude Code workflow fixes in a pull request, verifies the deploy and reverts
+  automatically if anything breaks. Every step is logged, with a one-click **Revert** (section "Auto-fix").
 
 Only **admins of the feedback tool** can use it (one admin list for Yondr tools, see "Who can use it").
 
@@ -29,6 +31,8 @@ Platform rules (sign-in, hosts, deploy lessons) live in `Overyondrdev/overyondr-
 | `src/email.js` | Email transports: Resend (standard) or Cloudflare Email Service |
 | `src/digest.js` | Daily digest and weekly backup summary |
 | `src/backups.js` | Nightly D1 → R2 backups and retention |
+| `src/triage.js`, `src/classify.js` | Auto-fix triage (the owner's rules), Workers AI objective/subjective classifier, the GitHub issue |
+| `src/verify.js` | Auto-fix watch: pull-request backstop, deploy + site verification, automatic revert |
 | `src/autofix.js`, `src/github.js` | Auto-fix log, ingest, one-click revert via the GitHub API |
 | `src/ingest.js` | Server-to-server endpoints with the `X-Ops-Token` header |
 | `src/api.js` | Dashboard API (admins) |
@@ -93,9 +97,9 @@ With the `CF_API_TOKEN` secret (without it these show "not checked" and never al
 | `backup_failed` | high | A nightly backup failed | new people |
 | `backup_ok_weekly_digest` | info | Mondays: last week's backups | opt-in |
 | `autofix_started` | info | The engine started on a feedback item | opt-in |
-| `autofix_merged` | info | An automatic fix merged | opt-in |
+| `autofix_merged` | info | An automatic fix is live and verified (says what was checked) | opt-in |
 | `autofix_failed` | high | Checks failed or the engine gave up | new people |
-| `autofix_reverted` | warning | Someone reverted an automatic fix | new people |
+| `autofix_reverted` | warning | An automatic fix was reverted (by an admin, or automatically after a failed deploy/site check) | new people |
 | `feedback_critical` | high | Feedback marked critical (sent by the feedback tool via `/api/events`) | new people |
 | `daily_digest` | info | Every morning (first check after 08:00 UTC by default): open problems, incidents, backups, auto-fixes | new people |
 
@@ -154,7 +158,7 @@ One email per recipient (nobody sees the others' addresses).
 ## APIs for other systems
 
 Server-to-server calls send the shared secret in **`X-Ops-Token: <OPS_INGEST_TOKEN>`** (at least 32 characters; a
-shorter or missing token disables these endpoints). No cookie, no CSRF header. The token opens only these three:
+shorter or missing token disables these endpoints). No cookie, no CSRF header. The token opens only these four:
 
 ### `POST /api/events` — raise an event
 
@@ -184,12 +188,20 @@ classification_reason?, severity?: "low"|"normal"|"high"|"critical", status?, is
 (`actor`, `status`, `message`). `repo` must be in `ALLOWED_REPOS` (`src/checks.js`); URLs must be
 `https://github.com/Overyondrdev/…`; `merge_sha` a full 40-character SHA. Statuses: `queued`, `triaged`, `fixing`,
 `pr_open`, `checks_failed`, `merged`, `deployed`, `verified`, `failed`, `reverted`, `rejected`. Moving to `fixing`,
-`merged`, `failed`/`checks_failed` sends `autofix_started`, `autofix_merged`, `autofix_failed`.
+`verified`, `failed`/`checks_failed` sends `autofix_started`, `autofix_merged`, `autofix_failed` (`merged` sends nothing:
+the fix is announced once verified). `merged` starts the verification clock (`merged_at`).
+
+### `POST /api/autofix/feedback` — the feedback tool reports an item (auto-fix triage)
+
+Sent by `yondr-feedback` for every new item and every change of type or priority (its README "Yondr Ops"):
+`{ feedback_id, type, priority, project, asset?, title?, message, url?, path?, page_title?, screenshots?: ["/api/attachments/<id>"],
+admin_url?, reason?, status?, created_at? }`. No personal data (no author; e-mail addresses are removed again here).
+→ `201`/`200 { autofix, decision: "rejected"|"triaged"|"queued"|"unchanged", started }`, `401`, `422`. Rules: "Auto-fix".
 
 ### `GET /api/autofix/config`
 
 `{ "autofix_enabled": false }`: the engine's kill switch (owners flip it in Settings). Default **off**. Also readable
-by signed-in admins.
+by signed-in admins. The repositories' `autofix.yml` workflow reads it before doing anything.
 
 ## Auto-fixes and one-click revert
 
@@ -210,6 +222,161 @@ the full timeline. `autofix_events` is append-only: it is the audit log.
    and sends `autofix_reverted`.
 
 Commit messages and PR text contain no names or emails (the repositories are public).
+
+## Auto-fix
+
+Bugs reported in the feedback tool can be fixed automatically by **Claude Code in GitHub Actions**, under the owner's
+rules (`overyondr-website-v1` → `docs/OPERATIONS.md` §6.3), which are binding:
+
+- Only feedback of type **bug** can be auto-fixed.
+- Only **objective** bugs: verifiable against a clear expected behaviour (JavaScript errors, broken links/404s, a form
+  that doesn't submit, broken layout or overflow at 375 px, text differing from its source, sign-in failures, missing
+  images). **Subjective** issues (look, wording, tone, colour, layout preference), **even critical**, are **never**
+  auto-fixed: they wait for a person.
+- Objective **critical** bugs start immediately; other objective bugs are **queued**.
+- Everything is logged (Auto-fixes tab, `autofix_events`), humans can revert any fix in one click, and people get
+  `autofix_*` alerts. The kill switch **`autofix_enabled`** (Settings, owners) is **off** by default.
+
+### The flow
+
+```text
+feedback tool ─ new item / type or priority changed ─► POST /api/autofix/feedback (X-Ops-Token)      [yondr-feedback]
+  (also feedback_critical → /api/events for critical items of any type)
+                                │
+ops triage (src/triage.js) ─────┤ type ≠ bug ...................................► rejected ("not a bug"), logged
+                                │ project not in PROJECT_REPOS ...................► triaged: a person decides
+                                │ Workers AI: subjective / unsure / error ........► triaged: a person decides (never an issue)
+                                │ repo has no auto-fix workflow ..................► triaged: a person fixes it
+                                │ objective ......................................► queued
+                                │     kill switch off: stays queued, nothing starts
+                                │     critical: starts now (≤ 10/hour in total)
+                                │     others: the 5-minute run starts ≤ autofix_max_per_hour (default 3)
+                                ▼
+"start" = GitHub issue in the target repo (GITHUB_TOKEN), then label `autofix` (+ `autofix-critical`)  → fixing,
+          autofix_started
+                                ▼
+.github/workflows/autofix.yml (target repo)                                                             [GitHub]
+  gate:    label added by an AUTOFIX_ACTORS account on its own issue? ops marker on line 1? kill switch on?
+  fix:     Claude Code edits files + runs the build (read-only token, no git/gh/web) → patch
+           or "needs_human" → comment on the issue, ops: failed, autofix_failed
+  publish: fresh checkout, mechanical guardrails (forbidden paths, ≤ 10 files, ≤ 200 lines, no binaries/symlinks),
+           commit, push autofix/ops-<id>, PR "Auto-fix: <title>" labelled autofix (AUTOFIX_PR_TOKEN) → pr_open
+.github/workflows/autofix-guard.yml: same guardrails on the PR (every push) → auto-merge (squash) on, or
+           checks_failed + auto-merge off. GitHub merges only when the required checks pass.
+.github/workflows/autofix-report.yml: merged → ops "merged" + merge_sha; closed → failed; CI failed → checks_failed
+                                ▼
+ops watch (src/verify.js, every 5 minutes, 2 minutes after monitoring)
+  backstop: asks GitHub about open autofix PRs (merged / closed); no PR 3 hours after the issue → failed
+  merged:   waits for the Workers Builds production build of merge_sha (CF_API_TOKEN) → deployed
+            build failed, or one of the repo's site checks (AUTOFIX_TARGETS gates) starts failing after the merge
+            → automatic revert (same code as the Revert button, actor "auto-revert") → reverted, autofix_reverted
+            (revert impossible → failed + autofix_failed, critical, "revert in GitHub")
+            15 minutes live with everything fine → verified, autofix_merged (says what was checked)
+```
+
+Statuses: `rejected` (not a bug) · `triaged` (waits for a person) · `queued` · `fixing` · `pr_open` · `checks_failed` ·
+`merged` · `deployed` · `verified` · `failed` · `reverted`.
+
+**Admins** (Auto-fixes tab): open an entry for its timeline and links (feedback item, issue, PR, commit); **Mark
+objective / Mark subjective** on entries that are `queued` or `triaged` (logged with your name; it sticks when the
+feedback changes later, and the AI is not asked again); **Revert** on merged/deployed/verified fixes. The feedback
+admin links each item to `https://ops.overyondrdev.com/#autofix/feedback/<feedback id>`. "Also show items that are not
+bugs" shows the `rejected` ones.
+
+**Classifier** (`src/classify.js`): Workers AI `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (as the feedback tool's
+summaries) with the owner's definitions and few-shot examples, temperature 0, strict JSON. An objective verdict needs
+confidence ≥ 0.75; anything else (low confidence, unreadable answer, error, no AI) is **subjective**.
+
+**Which repository** (`src/checks.js`): `PROJECT_REPOS` maps the feedback project (v1, portal → website-v1; v2 →
+website-v2; ads → digital-ads-portal; requests → marketing-request-portal; cards → christmass-cards; feedback →
+yondr-feedback; ops → yondr-ops). `AUTOFIX_TARGETS` says which repos have the workflows (`workflow: true`: website-v1
+and website-v2 today), the Worker whose build is watched and the site checks that must stay fine.
+
+**Guardrails** (enforced mechanically twice, in `autofix.yml` → publish and in `autofix-guard.yml`): no changes to
+sign-in (`auth/`, the Worker in `src/worker/` or `worker/`, any `*session.js`), Wrangler config, `.github/`,
+migrations, `package.json`/lockfiles, `.npmrc`/`.nvmrc`, `scripts/`, `_headers`/`_redirects`, CLAUDE.md, git/tool
+config (plus V1's `v2/`, `ad-portal/` and self-hosted Squarespace CSS); at most **10 files** and **200 changed lines**;
+no binaries, symlinks or submodules. The issue text has no personal data (e-mail addresses removed, no names; the
+classification says "an admin", not who), and the report's HTML and @mentions are neutralised.
+
+### Setup (owner; nothing runs until all of this is done and `autofix_enabled` is on)
+
+1. **An ops GitHub account.** Use a dedicated machine user (e.g. `yondr-ops-bot`) that is a member of `Overyondrdev`
+   with **Write** access to the repositories in `ALLOWED_REPOS`. Its login goes into `AUTOFIX_ACTORS`. (A GitHub App
+   works too: its bot login, e.g. `yondr-ops[bot]`, goes into `AUTOFIX_ACTORS`; the workflow passes the list as the
+   action's `allowed_bots`.)
+2. **Tokens of that account** (fine-grained PATs, resource owner Overyondrdev, only the `ALLOWED_REPOS`
+   repositories, expiry ≤ 1 year, calendar it):
+   - `GITHUB_TOKEN` (**Worker secret** on yondr-ops): Contents RW, Pull requests RW, Issues RW. Opens issues and
+     labels, revert PRs, reads PR state.
+   - `AUTOFIX_PR_TOKEN` (**GitHub org secret**, Actions, selected repositories: the ones with the workflows):
+     Contents RW, Pull requests RW. Pushes `autofix/ops-<id>`, opens the PR and turns on auto-merge. It must not be
+     the Actions `GITHUB_TOKEN`: what that token does starts no workflows (no CI on the PR, no report on merge). It can
+     be the same PAT as `GITHUB_TOKEN`.
+3. **`CLAUDE_CODE_OAUTH_TOKEN`** (GitHub org secret, selected repositories): from the owner's Claude subscription,
+   `claude setup-token` on a trusted machine. The **Claude GitHub App** (github.com/apps/claude) is *not* needed: the
+   workflow deliberately gives Claude the job's read-only `GITHUB_TOKEN` and does every write itself. Installing the
+   app is harmless but unused.
+4. **`OPS_INGEST_TOKEN`**: one random value (`openssl rand -hex 32`) as a **Worker secret** on `yondr-ops` and on
+   `yondr-feedback` (`npx wrangler secret put OPS_INGEST_TOKEN` in each), and as a **GitHub org secret** (selected
+   repositories).
+5. **Org variable `AUTOFIX_ACTORS`** (Settings → Secrets and variables → Actions → Variables): the ops account's login,
+   comma-separated without spaces if more than one. Unset = the workflows never run.
+6. **In each repository with the workflows** (website-v1, website-v2):
+   - Labels `autofix`, `autofix-critical`, `autofix-revert` (Issues → Labels; GitHub also creates them on first use).
+   - Settings → General → **Allow auto-merge**: on (also used by revert PRs).
+   - Branch protection / ruleset on `main`: **require the `build` status check** (CI) and, recommended, the
+     **`guard`** check (Auto-fix guard), so auto-merge waits for them. Without a required check, auto-merge would merge
+     as soon as the PR is mergeable. If CODEOWNERS review is required for all paths, auto-merge waits for it: either
+     accept that (a person approves each fix) or limit required code-owner review to the protected paths.
+   - Settings → Actions → General → Workflow permissions: "Read repository contents" is enough (every job declares its
+     own minimal `permissions:`). "Allow GitHub Actions to create and approve pull requests" stays **off**.
+   - Fork pull request workflows: keep "Require approval for all outside collaborators".
+7. **Cloudflare**: `CF_API_TOKEN` (see "Secrets") lets ops watch the Workers Builds deploy of the fix; without it
+   verification relies on the site checks alone (and says so). The `AI` binding is in `wrangler.jsonc`.
+8. Deploy yondr-ops and yondr-feedback (`npm run deploy` in each), merge the workflow files in each target repo.
+9. **Turn it on**: Settings → Auto-fix engine → on (and "Auto-fixes started per hour"). Try it with a harmless objective
+   bug (e.g. a deliberately broken link on a test page) and watch the Auto-fixes tab.
+
+### Turning it off, reverting
+
+- **Off**: Settings → Auto-fix engine → off. Nothing new starts (queued items stay queued); a workflow that starts
+  afterwards stops at its gate. Faster still: delete the `AUTOFIX_ACTORS` variable (no workflow runs at all) or revoke
+  `CLAUDE_CODE_OAUTH_TOKEN`/`AUTOFIX_PR_TOKEN`.
+- **Revert a fix**: Auto-fixes → the entry → **Revert this fix** (opens a revert PR, auto-merge on), or the Revert button
+  on the fix's pull request in GitHub. Ops reverts automatically when the build of the fix fails or the site breaks
+  within 15 minutes of going live.
+- **Stop one fix in progress**: before the PR exists, cancel the workflow run (Actions tab); once it exists, click
+  "Disable auto-merge" on it or close it (ops marks a closed PR failed).
+
+### Adding a repository
+
+1. Copy `.github/workflows/autofix.yml`, `autofix-guard.yml` and `autofix-report.yml` from
+   `overyondr-website-v2` (or v1). In all three adapt `FORBIDDEN` (identical in autofix.yml and autofix-guard.yml:
+   sign-in, Worker config, migrations, CI, dependencies of that repo), in `autofix.yml` the build/test commands in the
+   prompt and in `--allowedTools` (e.g. `Bash(npm run check)`, `Bash(npm test)`), the Node setup, and in
+   `autofix-report.yml` the CI workflow's `name:` under `workflow_run.workflows`.
+2. Do setup step 6 for the repo, and add it to the selected repositories of the org secrets and to the PATs.
+3. In ops `src/checks.js`, set `workflow: true` for it in `AUTOFIX_TARGETS` (and its `worker` and `gates`), with tests.
+
+### Security model (public repositories)
+
+- **Who can start a fix**: only an `autofix` label added by an `AUTOFIX_ACTORS` account to an issue that such an
+  account opened, with the ops marker on its first line. On public repos strangers can open issues and comment but
+  can't add labels; comments never trigger anything; pull requests from forks never get these secrets.
+- **What Claude can do**: read and edit files in the checkout and run the build/link check. No `Write`, git commit or
+  push, `gh`, `curl` or web tools; strict allow-list (`--permission-mode default`). Its GitHub token is the job's
+  read-only token. Its only secret is `CLAUDE_CODE_OAUTH_TOKEN` (a prompt injection could at worst spend the
+  subscription's usage or leak that token: revoke and rotate it if ever in doubt).
+- **What reaches main**: only a patch that passed the mechanical checks twice, as a PR that merges only after the
+  required checks. The PAT is used only in steps that never run Claude or repository code. Ops verifies after deploy
+  and reverts automatically.
+- **Prompt injection**: the feedback text is written by signed-in Yondr staff; it is quoted in the issue as data, with
+  HTML and @mentions neutralised, and the prompt tells Claude to treat it as data. The guardrails hold whatever the
+  text says.
+- **Privacy**: the issue and PR are public. The feedback tool sends no author or personal data and redacts e-mail
+  addresses and phone numbers; ops removes e-mail addresses again. Staff should not put confidential details in bug
+  reports.
 
 ## Backups
 
@@ -259,7 +426,7 @@ Each file starts with `PRAGMA defer_foreign_keys = true;`, then tables, rows, th
 
 ## Security model
 
-- Yondr sign-in on every request except `/brand/*`, `/robots.txt` and the three token endpoints. Pages → 302 to
+- Yondr sign-in on every request except `/brand/*`, `/robots.txt` and the four token endpoints. Pages → 302 to
   `loginUrl(request)`, API → 401 JSON. No Cloudflare Access fallback. `workers_dev`/`preview_urls` false.
 - Admin role from the feedback tool's `admins` table on every API request; owner-only: Settings, PII downloads.
 - **CSRF**: every state change needs `X-Yondr-Ops: 1` and `Origin` = `https://ops.overyondrdev.com`. No CORS at all.
@@ -276,10 +443,13 @@ Set each with `npx wrangler secret put NAME` (or dashboard → Workers → yondr
 | Secret | Needed for | How to create, exact permissions |
 | --- | --- | --- |
 | `CF_API_TOKEN` | Deploy, Access, inventory, usage checks | **User** API token (My Profile → API Tokens → Create; the Workers Builds API rejects account-owned tokens). Account `3fac6c19…8085` only, all **Read**: *Account · Workers Scripts: Read*, *Account · Workers Builds Configuration: Read*, *Account · Access: Apps and Policies: Read*, *Account · D1: Read*, *Account · Workers KV Storage: Read*, *Account · Workers R2 Storage: Read*, *Account · Account Analytics: Read* |
-| `GITHUB_TOKEN` | One-click revert | Fine-grained personal access token (or a GitHub App token), resource owner **Overyondrdev**, *Only select repositories*: the ones in `ALLOWED_REPOS`. Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**, **Issues: Read and write** (labels), Metadata: Read (automatic). For auto-merge, enable *Settings → General → Allow auto-merge* in each repo. Expiry ≤ 1 year: calendar it |
-| `OPS_INGEST_TOKEN` | `/api/events`, `/api/autofix/*` | Random, ≥ 32 characters: `openssl rand -hex 32`. Give the same value to the feedback tool / GitHub Actions (as their secret) |
+| `GITHUB_TOKEN` | One-click and automatic revert; auto-fix issues; pull-request backstop | Fine-grained personal access token of the **ops GitHub account** ("Auto-fix" → Setup; or a GitHub App token), resource owner **Overyondrdev**, *Only select repositories*: the ones in `ALLOWED_REPOS`. Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**, **Issues: Read and write** (labels), Metadata: Read (automatic). For auto-merge, enable *Settings → General → Allow auto-merge* in each repo. Expiry ≤ 1 year: calendar it |
+| `OPS_INGEST_TOKEN` | `/api/events`, `/api/autofix/*` | Random, ≥ 32 characters: `openssl rand -hex 32`. The same value goes to the feedback tool (Worker secret) and GitHub Actions (org secret) |
 | `RESEND_API_KEY` | `resend` transport only | Resend → API Keys → *Sending access*, domain `overyondrdev.com` |
 | `SLACK_WEBHOOK_<NAME>` | Slack alerts | Slack → Apps → Incoming Webhooks → Add to channel → copy URL. One secret per channel, e.g. `SLACK_WEBHOOK_OPS` |
+
+Bindings: `AI` (Workers AI, the auto-fix classifier; about one small request per bug report, against the 10k
+neurons/day free allowance).
 
 Plain variables (in `wrangler.jsonc`, safe to commit): `YONDR_AUTH_PUBLIC_JWK`, `ALLOWED_EMAIL_DOMAINS`,
 `EMAIL_FROM`, `EMAIL_FROM_NAME`, `EMAIL_TRANSPORT`. Keep every variable there: `wrangler deploy` replaces dashboard
@@ -303,12 +473,12 @@ plain-text variables.
 8. **Check** in Incognito: `/` sends you to the sign-in page and back; a non-admin sees "Admins only"; `/api/status`
    answers 401 signed out. In the dashboard: *Run checks now*, add yourself in Alerts and *Send test alert*,
    *Back up now* and download one backup.
-9. Later: have the feedback tool `POST /api/events` for critical feedback, and the auto-fix engine use `/api/autofix/*`.
+9. Auto-fix: section "Auto-fix" → "Setup" (the feedback tool's `OPS_INGEST_TOKEN` secret turns on its reports).
 
 ## Deploy
 
 `npm run deploy` (runs `check` and `test`, then `wrangler deploy`). It works from Claude cloud sessions too: the
-dashboard is bundled into the script, so there are no static assets to upload. Bundle: about 307 KiB (151 KiB
+dashboard is bundled into the script, so there are no static assets to upload. Bundle: about 346 KiB (162 KiB
 gzipped); the free plan allows 3 MB. Never set `DEV_EMAIL` on the deployed Worker.
 
 ## Rollback
@@ -347,7 +517,12 @@ owner's say-so.
 - **Workers Free CPU limit** (10 ms per invocation, cron included): monitoring is almost all network wait and fits;
   backups gzip in the Worker, so a large database may exceed it on the free plan (the run then fails and
   `backup_failed` is sent). Fine on Workers Paid (30 s default).
-- **Subrequests**: one monitoring run makes ~25 outbound requests plus alerts (free limit 50); a revert ≤ 45.
+- **Subrequests**: one monitoring run makes ~25 outbound requests plus alerts (free limit 50). The auto-fix run has
+  its own cron (own budget): ≤ 3 issues (2 requests each), ≤ 6 pull-request/build lookups, an automatic revert ≤ 45.
+  On Workers Free a revert plus other lookups in the same run can exceed 50; the revert then fails and `autofix_failed`
+  (critical) asks a person to revert in GitHub. Fine on Workers Paid.
 - If the monitoring run itself crashes (e.g. D1 unavailable), no alert can be sent: watch `yondr-ops` errors in
   Workers Observability, and the daily digest stops arriving.
-- Cron triggers: Workers Free allows 5 per account; this Worker uses 2.
+- Cron triggers: Workers Free allows 5 per account; this Worker uses 3 (monitoring, auto-fix, backups). If the
+  account has no free slot, `wrangler deploy` fails: drop `2-59/5 * * * *` from `wrangler.jsonc`; the auto-fix queue
+  and verification then stop (triage and critical starts still work; revert by hand).
