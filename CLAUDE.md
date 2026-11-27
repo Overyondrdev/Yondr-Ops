@@ -18,7 +18,14 @@ sign-in, hosts, Access, DNS or deploys.
 | `src/verify.js` | Auto-fix watch: PR backstop, deploy + site verification, automatic revert (own cron) |
 | `src/autofix.js`, `src/github.js` | Auto-fix log and one-click revert |
 | `src/budget.js` | Auto-fix spending (owner's rules: monthly budget, warnings, pause at 90 %, owner approval) |
-| `src/ingest.js` | Token endpoints (`X-Ops-Token`) |
+| `src/ingest.js` | Token endpoints (`X-Ops-Token`); `client_errors` events go to `src/errors.js` |
+| `src/overview.js`, `src/cfcache.js` | Overview (one call); Cloudflare answers cached 5 minutes in `cf_cache` |
+| `src/issues.js` | Issues tracker (automatic issues, `issue_assigned` / `issue_critical`, from feedback) |
+| `src/status.js` | Staff status page (`/status`, all signed-in staff) and uptime history |
+| `src/errors.js`, `src/deploys.js` | Server/browser errors; deployments, deploy watch, owners-only rollback (`CF_DEPLOY_TOKEN`) |
+| `src/drill.js` | Monthly restore drill into `DRILL_DB`: the ONLY file that drops anything |
+| `src/keys.js`, `src/review.js`, `src/people.js` | Key-expiry calendar; quarterly access review; directory and roles via the feedback tool's API |
+| `src/daily.js` | Daily jobs on the backup cron (drill, keys, access review, retention) |
 | `src/api.js`, `src/index.js`, `src/http.js`, `src/auth.js` | Dashboard API, routing and sign-in gate, CSRF, roles |
 | `src/readonly.js` | Read-only wrapper for other tools' databases |
 | `src/schema.js` | D1 schema of `yondr-ops`, applied automatically; additive only |
@@ -30,7 +37,11 @@ sign-in, hosts, Access, DNS or deploys.
 ## Rules
 - **Sign-in on everything** except `/brand/*`, `/robots.txt` and the four token endpoints. Pages → 302 to
   `loginUrl(request)`, API → 401 JSON. Admins only (feedback tool's `admins` table; there is ONE admin list — never add
-  a second). No Cloudflare Access fallback. `workers_dev` and `preview_urls` stay `false`.
+  a second), except the read-only staff **Status** page (`/status`, `GET /api/status/public`): any signed-in staff
+  member, no technical detail. No Cloudflare Access fallback. `workers_dev` and `preview_urls` stay `false`.
+- **Roles are changed only through the feedback tool's admin API** (`src/people.js`, service binding `FEEDBACK`, the
+  person's own `yondr_session`, `X-Yondr-Feedback: 1`, ops `Origin`), audited. Never write `FEEDBACK_DB`. Other tools'
+  roles are display-only here (name, email, role, last seen — nothing more).
 - **Keep `src/yondr-session.js` byte-identical** to `overyondr-website-v1/auth/src/session.js`. When that file
   changes, update this copy in a PR of its own.
 - **CSRF**: every state change needs `X-Yondr-Ops: 1` and the site's own `Origin`. No CORS. The ingest token never
@@ -39,9 +50,15 @@ sign-in, hosts, Access, DNS or deploys.
   `readOnly()`; `npm run check` enforces it. **Never implement deletion of live data.** Only backup files under
   `backups/` in R2 are deleted, by the retention rules.
 - **Own data** (D1 `yondr-ops`): schema changes additive and idempotent (`IF NOT EXISTS`, `ADDED_COLUMNS`);
-  `autofix_events` is append-only (the audit log). Locally use `--local` only; never run commands against remote
+  `autofix_events` and `issue_events` are append-only. Locally use `--local` only; never run commands against remote
   databases without the owner's say-so.
-- **Alerts**: owners can't be unsubscribed from `site_down` / `site_exposed` or the `autofix_budget_*` alerts; critical
+- **Destructive SQL** (`npm run check`): `DROP` only in `src/drill.js` on `DRILL_DB` (scratch database
+  `yondr-ops-restore-drill`); personal data is dropped from it straight after each drill. `DELETE FROM` only on ops'
+  own bookkeeping tables (allow-list in `scripts/check.mjs`).
+- **Rollback** is owners-only, confirmed, audited, with the separate `CF_DEPLOY_TOKEN`; `CF_API_TOKEN` stays read-only.
+- **Crons**: keep 3. New daily work goes in `src/daily.js` (backup cron), new 5-minute work in the monitor or auto-fix run.
+- **Alerts**: owners can't be unsubscribed from `site_down` / `site_exposed`, `rollback_done`, `restore_drill_failed`,
+  `key_expiring`, `issue_critical` or the `autofix_budget_*` alerts; `issue_assigned` only ever goes to the assignee; critical
   alerts and `autofix_budget_*` ignore quiet hours. Auto-fix never spends past the pause level without an owner's approval. Keep
   messages plain (what, which site, since when, what was done, link). New alert types go in `EVENTS` and README.
 - **Never commit secrets, webhook URLs or personal email addresses** (this repository is public). Tests and examples
@@ -65,5 +82,5 @@ sign-in, hosts, Access, DNS or deploys.
    OPERATIONS.md §2): ready = the **build** check green, branch up to date with `main`, docs updated, no open review
    questions. Then check the change live and say what you checked. Still ask first for: deleting data or databases,
    DNS or Access changes, new secrets/tokens, and anything the owner asked to approve.
-5. Deploy: `npm run deploy` (README "Deploy"), then check https://ops.overyondrdev.com (Status loads, *Run checks
-   now* works) and say what you checked. Delete the merged branch.
+5. Deploy: `npm run deploy` (README "Deploy"), then check https://ops.overyondrdev.com (Overview loads, Sites & checks →
+   *Run checks now* works, `/status` loads) and say what you checked. Delete the merged branch.

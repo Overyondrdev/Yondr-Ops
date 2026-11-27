@@ -13,7 +13,15 @@ Monitoring, alerts, backups and the auto-fix log for Yondr's `overyondrdev.com` 
   GitHub issue that the repository's Claude Code workflow fixes in a pull request, verifies the deploy and reverts
   automatically if anything breaks. Every step is logged, with a one-click **Revert** (section "Auto-fix").
 
-Only **admins of the feedback tool** can use it (one admin list for Yondr tools, see "Who can use it").
+- **Admin dashboard** (v2): Overview of everything, an **Issues** tracker (opened automatically for incidents, failed
+  deploys and auto-fixes), **Errors** (server and browser), **Deploys** with a 15-minute deploy watch and owners-only
+  one-click **rollback**, a monthly **restore drill** of every backup, a **key-expiry calendar**, the quarterly **access
+  review**, a Cloudflare **Access seat** watch, and **People & permissions** across the tools.
+- **Status page** for all staff: `/status` (any signed-in `@overyondr.com` person): is each site working, uptime over 7
+  and 30 days, incidents in plain words.
+
+Only **admins of the feedback tool** can use the dashboard (one admin list for Yondr tools, see "Who can use it");
+every signed-in Yondr person can read the status page.
 
 Platform rules (sign-in, hosts, deploy lessons) live in `Overyondrdev/overyondr-website-v1` → `docs/PLATFORM.md` and
 `docs/OPERATIONS.md`. Read them before changing sign-in, hosts or deploys.
@@ -36,6 +44,15 @@ Platform rules (sign-in, hosts, deploy lessons) live in `Overyondrdev/overyondr-
 | `src/autofix.js`, `src/github.js` | Auto-fix log, ingest, one-click revert via the GitHub API |
 | `src/budget.js` | Auto-fix spending: cost per run, monthly budget, forecast, warnings, pause at 90 %, owner approvals |
 | `src/ingest.js` | Server-to-server endpoints with the `X-Ops-Token` header |
+| `src/overview.js`, `src/cfcache.js` | The Overview (one call), Cloudflare answers cached 5 minutes in `cf_cache` |
+| `src/issues.js` | Issues tracker: automatic issues, assignment and critical alerts, from feedback items |
+| `src/status.js` | Staff status page and uptime history (`check_history`) |
+| `src/errors.js` | Server errors per Worker (`errors:<worker>`), browser errors (`client_errors`) |
+| `src/deploys.js` | Deployments per Worker, deploy watch, one-click rollback |
+| `src/drill.js` | Monthly restore drill into the scratch database `DRILL_DB` (the only place anything is dropped) |
+| `src/keys.js` | Key-expiry calendar and `key_expiring` alerts (never key values) |
+| `src/people.js`, `src/review.js` | Directory and roles across tools, feedback/ops role changes via the feedback tool; quarterly access review |
+| `src/daily.js` | The daily jobs on the backup cron (drill, keys, access review, retention) |
 | `src/api.js` | Dashboard API (admins) |
 | `src/index.js` | Routing, sign-in gate, static files, cron dispatch |
 | `src/auth.js` | Who is signed in (Yondr session; `DEV_EMAIL` locally) and their role (feedback tool's `admins` table) |
@@ -58,7 +75,14 @@ tool's admin list get in: ops reads `SELECT role FROM admins WHERE email = ?` fr
   spend, and downloads Christmas-cards backups.
   Owners always get "site down" and "site exposed" alerts.
 
-Add or remove admins in **feedback.overyondrdev.com/admin → People**. There is no second list here.
+Add or remove admins in **People & permissions** here or in **feedback.overyondrdev.com/admin → People**: both change
+the same list (ops goes through the feedback tool's own API). There is no second list.
+
+- **staff** (any signed-in `@overyondr.com` person who is not an admin): only the **Status** page (`/status`,
+  `GET /api/status/public`). Everything else answers 403.
+- **Owners only**: Settings, approving auto-fix spend, **Roll back**, **Run restore drill now**, removing keys from the
+  calendar, opening an access review by hand, making someone owner (the feedback tool enforces that), PII backup
+  downloads.
 
 ## What is checked
 
@@ -74,6 +98,12 @@ Every 5 minutes (cron `*/5 * * * *`), as a signed-out visitor, without following
 | `overyondr.com` | 301 to `www.overyondr.com`, served by Squarespace | warning "overyondr.com has changed" (nothing may change it before the cutover) |
 
 With the `CF_API_TOKEN` secret (without it these show "not checked" and never alert):
+
+| Check | How often | Alert |
+| --- | --- | --- |
+| `errors:<worker>` for every Worker in `WORKERS` (`src/checks.js`): errors ÷ requests in the last 15 minutes (GraphQL `workersInvocationsAdaptive`) | 5 min | > 2 % with ≥ 20 requests = `error_rate` warning, > 10 % = high |
+| `cf:access-seats`: Zero Trust users with an Access seat (`GET /accounts/<id>/access/users`) | daily | any seat in use = `access_seats_used` (warning). Without the "Access: Users Read" permission: "not checked" |
+
 
 | Check | How often | Alert |
 | --- | --- | --- |
@@ -108,6 +138,15 @@ With the `CF_API_TOKEN` secret (without it these show "not checked" and never al
 | `autofix_budget_approved` | info | An owner approved more auto-fix spend for this month | **Owners always**, quiet hours ignored |
 | `feedback_critical` | high | Feedback marked critical (sent by the feedback tool via `/api/events`) | new people |
 | `daily_digest` | info | Every morning (first check after 08:00 UTC by default): open problems, incidents, backups, auto-fixes, auto-fix spend this month and forecast | new people |
+| `error_rate` | warning / high | A Worker's error rate over 15 minutes is above 2 % / 10 % (≥ 20 requests) | opt-in |
+| `client_errors_spike` | warning | More than `client_errors_threshold` (default 20) browser errors in 15 minutes for one project (at most hourly per project) | opt-in |
+| `deploy_regression` | high | 15 minutes after a deployment, errors are clearly up or a site check started failing (link to Deploys) | new people |
+| `rollback_done` | warning | An owner rolled a Worker back | **Owners always** |
+| `restore_drill_failed` | high | The monthly restore drill didn't give back the same tables and rows | **Owners always** + new people |
+| `key_expiring` | warning / high | A key in the calendar expires in 30 days, 14 days, or today/already | **Owners always** + the key's owner |
+| `access_seats_used` | warning | Someone uses a Cloudflare Access seat | opt-in |
+| `issue_assigned` | info | An issue was assigned to you | **Only the assignee, always** (not when you assign yourself; never by subscription) |
+| `issue_critical` | critical | A new critical issue (by a person, from feedback, auto-fix or deploy; not for incident issues, whose incident already alerted) | **Owners always** |
 
 "New people" = the rules a person gets when an admin adds them (they can be changed straight away).
 
@@ -140,7 +179,7 @@ People don't need to be admins to receive alerts; only admins can open the dashb
   running and incidents are logged; nobody is alerted. If it is still failing when the mute ends, people are told then.
 - **Kill switches** (Settings, owners): Monitoring, Alerts (off = still checked and logged, nothing sent), Nightly
   backups, Auto-fix engine. Also: critical reminder interval, duplicate window, digest hour, backup retention.
-- Every change is in the Settings → Audit log.
+- Every change is in the **Audit log** page.
 
 ### Slack
 
@@ -161,6 +200,144 @@ people route to it.
 - **`off`**: nothing is emailed (deliveries are logged as failed with the reason). Slack still works.
 
 One email per recipient (nobody sees the others' addresses).
+
+## Dashboard pages
+
+Left navigation (collapses behind **Menu** on phones). Every page is keyboard operable, works at 375 px and has
+loading, empty and error states.
+
+| Page | What | Who |
+| --- | --- | --- |
+| **Overview** (`#overview`) | Every site (status, last deploy and its result, error rate 24 h), open incidents, open issues by priority, auto-fix (on/off, spend and forecast), backups (last good one per database, last drill), alerts sent in 24 h, setup gaps (missing secrets of yondr-ops, yondr-feedback, yondr-christmas-cards: names only, via `GET …/workers/scripts/<name>/settings`), feedback (new this week per project, critical open; read-only from `FEEDBACK_DB`), keys expiring, next access review, Access seats, browser errors. Each card links to its page. Cloudflare answers are cached 5 minutes in `cf_cache`; refreshes every minute | admins |
+| **Issues** (`#issues`, `#issues/<id>`) | The tracker (below) | admins |
+| **Status** (`/status`, `#status`) | Sites up/down, uptime 7 / 30 days (from `check_history`), incidents of the last 7 days in plain words, last checked. Refreshes every minute (pause button); no technical detail | **all staff** |
+| **Sites & checks** (`#checks`) | Every check with details, mutes, *Run checks now*; link to **Incidents** (`#incidents`) | admins |
+| **Errors** (`#errors`) | Server errors per Worker (1 h, 24 h, per hour) and browser errors per project with recent examples | admins |
+| **Deploys** (`#deploys`, `#deploys/<worker>`) | Recent deployments and versions per Worker (who, when, source), deploy-watch results, **Roll back** | admins; rollback owners |
+| **Auto-fixes**, **Backups**, **Alerts**, **Settings** | As before; Backups adds **Restore drills** | admins |
+| **People & permissions** (`#people`, `#people/review`) | Feedback/Ops owners and admins (change roles here), everyone across tools, remove-from-all-tools checklist, access review | admins |
+| **Keys** (`#keys`) | Key-expiry calendar | admins; removing owners |
+| **Audit log** (`#audit`) | Every change in ops, filter by who and what | admins |
+
+## Issues
+
+One place for everything that needs a person (`issues` + the append-only timeline `issue_events`).
+
+- **Automatic**: an incident opens one (source `incident`, or `deploy` for a failed Workers Builds deploy); a check that
+  breaks again while its issue is open adds to the same issue. When the incident resolves, the issue is set to
+  **resolved** with "auto-resolved: incident resolved" (unless people already closed it; they can reopen it). An auto-fix
+  that **fails** or is **reverted** opens one (`autofix`), a **deploy regression** opens one (`deploy`), and the
+  **quarterly access review** opens one (`security`).
+- **By hand** (admins): title, description, priority (low/normal/high/critical), assignee (anyone in the directory),
+  due date, site. **From feedback item**: give its number; ops copies only the title and text (redacted again), project
+  and priority, and links it (`feedback:<id>`), once per open issue.
+- Filters: status, priority, assignee (`none` = unassigned), source, site, text. Comments and every change go to the
+  timeline with who and when.
+- Alerts: `issue_assigned` to the assignee; `issue_critical` to owners for a new critical issue (or one raised to
+  critical).
+
+API (admins, CSRF header on changes): `GET /api/issues?status=active|open|…&priority=&assignee=&source=&site=&q=`,
+`POST /api/issues`, `GET|PATCH /api/issues/<id>`, `POST /api/issues/<id>/comments { body }`,
+`POST /api/issues/from-feedback { feedback_id }`.
+
+## Errors
+
+**Server errors** (needs `CF_API_TOKEN` with *Account Analytics: Read*): every monitoring run reads the last hour of
+`workersInvocationsAdaptive` (`sum { requests errors }` by `scriptName` and `datetimeFiveMinutes`) in one GraphQL
+request, stores it in `worker_error_stats` (8 days) and evaluates the last 15 minutes per Worker (check
+`errors:<worker>`, alert `error_rate`; thresholds `ERRORS` in `src/checks.js`). "Errors" are invocations that did not
+succeed (uncaught exceptions, exceeded CPU/memory, internal errors); a 5xx a Worker returns on purpose is not counted.
+
+**Browser errors**: the feedback widget/tool reports JavaScript errors to `POST /api/events` (ingest token) with
+`type: "client_errors"`:
+
+```json
+{ "type": "client_errors", "project": "v1", "count": 7, "window_minutes": 5,
+  "sample": [{ "message": "TypeError: x is null", "source": "/js/site.js:120", "page_path": "/careers" }] }
+```
+
+`project` (letters, digits, `-`, `_`), `count` (whole number), `window_minutes` (1–1440, default 5), `sample` (up to 10
+kept; message ≤ 300, source ≤ 200, page path ≤ 200 characters, query strings dropped, personal details redacted).
+Answers `201 { ok, project, total_in_window, alerted }` or `422`. More than `client_errors_threshold` (Settings,
+default 20) in 15 minutes for one project sends `client_errors_spike`, at most once an hour per project. Kept 8 days.
+
+## Deploys and rollback
+
+- **Deploys page**: `GET /accounts/<id>/workers/scripts/<name>/deployments` and `/versions` per Worker in `WORKERS`
+  (cached 4–5 minutes; *Refresh from Cloudflare* skips the cache).
+- **Deploy watch** (the auto-fix cron, every 5 minutes, own subrequest budget): a deployment ops hasn't seen, younger
+  than an hour, is watched. Baseline: error rate of the hour before and which of the Worker's site checks
+  (`WORKERS[].gates`) were already failing. 15 minutes after the deploy: a site check that started failing, or an error
+  rate above max(2 %, 2 × before + 1 point) with ≥ 20 requests → `deploy_regression` (link `#deploys/<worker>`) and an
+  issue. The first deployment seen for a Worker is only recorded (`baseline`).
+- **Roll back** (owners only, confirm dialog, audited, `rollback_done`): needs the separate secret **`CF_DEPLOY_TOKEN`**
+  (below); without it the button explains what is needed. Ops reads the deployments with that token and deploys the
+  previous version (the newest earlier deployment whose main version differs from the live one) at 100 %:
+  `POST /accounts/<id>/workers/scripts/<name>/deployments { "strategy": "percentage", "versions": [{ "version_id":
+  "<previous>", "percentage": 100 }] }`. API: `POST /api/deploys/<worker>/rollback { version_id }` (the version the page
+  showed; refused if the deployments changed meanwhile).
+- **A rollback is undone by the next normal deploy from `main`** (Workers Builds or `npm run deploy`): fix or revert the
+  change on `main` before merging anything else. **Database migrations (D1) are not rolled back**: the old code must
+  still work with the database as it is.
+
+## Restore drill
+
+Proves the backups restore. On the **1st of each month**, right after the nightly backups (the same 03:17 cron), and on
+demand (**Backups → Run restore drill now**, owners): for each database, the latest good backup is loaded from R2 into
+the scratch D1 **`yondr-ops-restore-drill`** (binding `DRILL_DB`): every table, view and trigger there is dropped first,
+the backup SQL runs in batches of 200 statements, and the restored tables and per-table row counts are compared with what
+the backup recorded (`backups.table_stats`; older backups: table list and total rows). Results in `restore_drills`
+(Backups page, Overview, weekly backup digest); a failure sends `restore_drill_failed`. **Christmas cards** (personal
+data): restored, counted, and its tables are **dropped again straight away**, also when the drill fails (`pii_dropped`).
+Setting `restore_drill_enabled` (Settings) turns the monthly run off.
+
+**Safety rule** (`npm run check`): `DROP` appears only in `src/drill.js` and only on the drill handle (`env.DRILL_DB`);
+only `src/drill.js` uses `DRILL_DB`; `DELETE FROM` is allowed only on ops' own bookkeeping tables (`subscriptions`,
+`subscribers`, `check_history`, `worker_error_stats`, `client_errors`, `cf_cache`, `keys_registry`). Other tools'
+databases stay read-only (`readOnly()`).
+
+## Keys (expiry calendar)
+
+`keys_registry`: name, where it lives, owner, expiry date, rotation notes, last rotated — **never the key**. Values that
+look like a key are refused. Seeded (no dates; fill them in): `GITHUB_TOKEN`, `AUTOFIX_PR_TOKEN` (PATs, ≤ 366 days),
+`CF_API_TOKEN`, `CF_DEPLOY_TOKEN`, `RESEND_API_KEY` (ops and cards), `ANTHROPIC_API_KEY`, `OPS_INGEST_TOKEN`,
+`GOOGLE_CLIENT_SECRET` and `SESSION_PRIVATE_JWK` (yondr-auth). Admins add and edit, owners remove; audited. Every day
+(backup cron) `key_expiring` goes to owners and the key's owner at **30** and **14** days before expiry and **on the day**
+(once per level; a key added late gets the most urgent level reached). API: `GET|POST /api/keys`,
+`PATCH|DELETE /api/keys/<id>`.
+
+## People & permissions
+
+- **Directory**: everyone in the feedback tool's `admins` list, alert subscribers, issue assignees, the ad library's
+  `users` (email, role, last seen) and marketing requests' `users` (name, email, role, active, last seen), all read-only.
+  Nothing beyond name, email, role and last seen is shown. "Last seen" per tool: ops (`ops_seen`, every API call, at
+  most one write per 10 minutes), feedback (its `activity`), ad library and requests (`last_seen_at`).
+- **Feedback tool & Ops roles** (owner/admin) are changed here **through the feedback tool's own admin API**, as the
+  signed-in admin: `GET/POST/DELETE https://feedback.overyondrdev.com/api/admins` (`POST { email, role }`,
+  `DELETE { email }`) with that person's own `yondr_session` cookie (nothing else of theirs), `X-Yondr-Feedback: 1` and
+  `Origin: https://ops.overyondrdev.com`, so its rules apply (only owners change owners, nobody removes themselves) and
+  its 403s are shown as they are. The call goes over the **service binding `FEEDBACK`** (Worker `yondr-feedback`; no
+  public egress, no same-zone fetch loop); without the binding it falls back to `fetch` of the public host. Ops never
+  writes `FEEDBACK_DB`. Every change, done or refused, is in the audit log (`permission.feedback_admin.*`) with the actor.
+  Locally (`DEV_EMAIL`) there is no session cookie, so changes are refused by the feedback tool; that's expected.
+- Other tools' roles are read-only with **Manage in <tool>** links; a person's drawer has a **Remove from all tools**
+  checklist.
+- **Access review**: everyone with an admin-type role (feedback owner/admin, ad library admin/editor, requests
+  admin/lead/marketing), with last seen; not seen for 90 days (or never) is flagged. On the **first weekday (UTC) of
+  January, April, July and October** the backup cron opens the issue "Quarterly access review <year> Q<n>" with this
+  checklist, assigned to an owner and announced to every owner (`issue_assigned`), due in 14 days; once per quarter.
+  Owners can open one any time.
+- API: `GET /api/directory`, `POST|DELETE /api/permissions/feedback-admins`, `POST /api/access-review/open` (owners).
+
+## Cron usage
+
+Still **3 cron triggers** (Workers Free: 5 per account):
+
+| Cron | Runs |
+| --- | --- |
+| `*/5 * * * *` | Monitoring: gate checks, Cloudflare checks (builds, Access, inventory, usage, **server errors**, **Access seats** daily), state machine, incidents → issues, uptime history, daily digest |
+| `2-59/5 * * * *` | Auto-fix queue, watch and verification, spend checks, **deploy watch** |
+| `17 3 * * *` | Backups, then (`src/daily.js`) the **restore drill** on the 1st, **key expiry**, the **quarterly access review**, retention of `check_history` (35 days) and error stats (8 days) |
 
 ## APIs for other systems
 
@@ -496,7 +673,13 @@ Each file starts with `PRAGMA defer_foreign_keys = true;`, then tables, rows, th
 
 - Yondr sign-in on every request except `/brand/*`, `/robots.txt` and the four token endpoints. Pages → 302 to
   `loginUrl(request)`, API → 401 JSON. No Cloudflare Access fallback. `workers_dev`/`preview_urls` false.
-- Admin role from the feedback tool's `admins` table on every API request; owner-only: Settings, PII downloads.
+- Admin role from the feedback tool's `admins` table on every API request; signed-in staff who aren't admins only get
+  `GET /api/me` and `GET /api/status/public`. Owner-only: Settings, spend approval, rollback, restore drill on demand,
+  removing keys, PII downloads.
+- Role changes go through the feedback tool's API as the signed-in person (only their `yondr_session` cookie is
+  forwarded, over the `FEEDBACK` service binding); ops never writes another tool's database.
+- `DROP` only in the scratch database `DRILL_DB` (`npm run check`); Christmas-card data is dropped from it straight after
+  each drill.
 - **CSRF**: every state change needs `X-Yondr-Ops: 1` and `Origin` = `https://ops.overyondrdev.com`. No CORS at all.
 - **Ingest token** compared in constant time; never accepted on the admin API.
 - Dashboard CSP `default-src 'none'`, no inline scripts or styles, `frame-ancestors 'none'`, `noindex`.
@@ -510,14 +693,17 @@ Set each with `npx wrangler secret put NAME` (or dashboard → Workers → yondr
 
 | Secret | Needed for | How to create, exact permissions |
 | --- | --- | --- |
-| `CF_API_TOKEN` | Deploy, Access, inventory, usage checks | **User** API token (My Profile → API Tokens → Create; the Workers Builds API rejects account-owned tokens). Account `3fac6c19…8085` only, all **Read**: *Account · Workers Scripts: Read*, *Account · Workers Builds Configuration: Read*, *Account · Access: Apps and Policies: Read*, *Account · D1: Read*, *Account · Workers KV Storage: Read*, *Account · Workers R2 Storage: Read*, *Account · Account Analytics: Read* |
+| `CF_API_TOKEN` | Deploy, Access, inventory, usage, server-error and Access-seat checks; Deploys page; setup gaps | **User** API token (My Profile → API Tokens → Create; the Workers Builds API rejects account-owned tokens). Account `3fac6c19…8085` only, all **Read**: *Account · Workers Scripts: Read* (also deployments, versions and secret names), *Account · Workers Builds Configuration: Read*, *Account · Access: Apps and Policies: Read*, *Account · Access: Users: Read* (**new**, Access seats), *Account · D1: Read*, *Account · Workers KV Storage: Read*, *Account · Workers R2 Storage: Read*, *Account · Account Analytics: Read* (usage and server errors). Existing tokens: edit the token and add *Access: Users Read* |
+| `CF_DEPLOY_TOKEN` | **Roll back** only | A **separate** user API token, account `3fac6c19…8085` only, *Account · Workers Scripts: Edit*. Only owners can use it (rollback button). Without it rollback is unavailable and the button says so. Set an expiry and put it in the Keys calendar |
 | `GITHUB_TOKEN` | One-click and automatic revert; auto-fix issues; pull-request backstop | Fine-grained personal access token of the **ops GitHub account** ("Auto-fix" → Setup; or a GitHub App token), resource owner **Overyondrdev**, *Only select repositories*: the ones in `ALLOWED_REPOS`. Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**, **Issues: Read and write** (labels), Metadata: Read (automatic). For auto-merge, enable *Settings → General → Allow auto-merge* in each repo. Expiry ≤ 1 year: calendar it |
 | `OPS_INGEST_TOKEN` | `/api/events`, `/api/autofix/*` | Random, ≥ 32 characters: `openssl rand -hex 32`. The same value goes to the feedback tool (Worker secret) and GitHub Actions (org secret) |
 | `RESEND_API_KEY` | `resend` transport only | Resend → API Keys → *Sending access*, domain `overyondrdev.com` |
 | `SLACK_WEBHOOK_<NAME>` | Slack alerts | Slack → Apps → Incoming Webhooks → Add to channel → copy URL. One secret per channel, e.g. `SLACK_WEBHOOK_OPS` |
 
 Bindings: `AI` (Workers AI, the auto-fix classifier; about one small request per bug report, against the 10k
-neurons/day free allowance).
+neurons/day free allowance); `DRILL_DB` (D1 `yondr-ops-restore-drill`, `456502b9-…`, already created: scratch database
+for the restore drill only); `FEEDBACK` (service binding to Worker `yondr-feedback`: role changes in People &
+permissions).
 
 Plain variables (in `wrangler.jsonc`, safe to commit): `YONDR_AUTH_PUBLIC_JWK`, `ALLOWED_EMAIL_DOMAINS`,
 `EMAIL_FROM`, `EMAIL_FROM_NAME`, `EMAIL_TRANSPORT`. Keep every variable there: `wrangler deploy` replaces dashboard
@@ -538,21 +724,22 @@ plain-text variables.
    behind Access (safe, but costs seats; ops itself will warn about it).
 7. **Docs**: add the Worker, host, D1 `yondr-ops` and R2 `yondr-ops-backups` to `docs/OPERATIONS.md` §1 and
    `docs/PLATFORM.md` §1 in `overyondr-website-v1` (OPERATIONS.md §2 rule 5).
-8. **Check** in Incognito: `/` sends you to the sign-in page and back; a non-admin sees "Admins only"; `/api/status`
-   answers 401 signed out. In the dashboard: *Run checks now*, add yourself in Alerts and *Send test alert*,
+8. **Check** in Incognito: `/` sends you to the sign-in page and back; a non-admin lands on the Status page (`/status`)
+   and gets 403 from everything else; `/api/status` answers 401 signed out. In the dashboard: *Run checks now*, add yourself in Alerts and *Send test alert*,
    *Back up now* and download one backup.
 9. Auto-fix: section "Auto-fix" → "Setup" (the feedback tool's `OPS_INGEST_TOKEN` secret turns on its reports).
 
 ## Deploy
 
 `npm run deploy` (runs `check` and `test`, then `wrangler deploy`). It works from Claude cloud sessions too: the
-dashboard is bundled into the script, so there are no static assets to upload. Bundle: about 346 KiB (162 KiB
+dashboard is bundled into the script, so there are no static assets to upload. Bundle: about 513 KiB (205 KiB
 gzipped); the free plan allows 3 MB. Never set `DEV_EMAIL` on the deployed Worker.
 
 ## Rollback
 
 - Code: Cloudflare dashboard → Workers → yondr-ops → Deployments → pick the previous version → *Rollback*, or
-  `npx wrangler rollback`. Data is untouched (schema changes are additive).
+  `npx wrangler rollback`. Data is untouched (schema changes are additive). (Ops' own **Deploys → Roll back** works for
+  yondr-ops too, but if the bad version broke the dashboard use the Cloudflare dashboard.)
 - Stop everything fast without deploying: Settings → switch off Monitoring / Alerts / Backups, or delete the cron
   triggers in the dashboard (Workers → yondr-ops → Settings → Triggers).
 - Ops can't break the sites it watches: it only reads them (HTTP GETs, read-only DB queries, read-only CF token). The
@@ -569,6 +756,12 @@ npm run dev            # wrangler dev --local --test-scheduled --local-upstream 
 # http://localhost:8787/__scheduled?cron=*/5+*+*+*+*    run monitoring once (real signed-out GETs to the sites)
 # http://localhost:8787/__scheduled?cron=17+3+*+*+*     run backups once (local D1 and R2)
 ```
+
+Seed a few people and feedback items in the local `yondr-feedback` / `yondr-ad-portal-db` databases to see the
+directory and Overview filled. `X-Dev-Email: cy.staff@overyondr.com` (a browser extension or Playwright's
+`extraHTTPHeaders`) shows the staff view: only `/status`. Role changes in People & permissions are refused locally
+(no session cookie to forward). The `FEEDBACK` service binding shows "not connected" in `wrangler dev` unless
+`yondr-feedback` runs locally too; harmless.
 
 `--local-upstream localhost:8787` matters: otherwise `wrangler dev` rewrites every request's URL to the route
 (`ops.overyondrdev.com`) and `DEV_EMAIL` (localhost only) is ignored. Emails are written to `.wrangler/tmp/email/`
@@ -591,6 +784,15 @@ owner's say-so.
   (critical) asks a person to revert in GitHub. Fine on Workers Paid.
 - If the monitoring run itself crashes (e.g. D1 unavailable), no alert can be sent: watch `yondr-ops` errors in
   Workers Observability, and the daily digest stops arriving.
+- **Server-error dimension**: `datetimeFiveMinutes` on `workersInvocationsAdaptive` is not confirmed against the live
+  schema; if the query fails the `errors:*` checks show "not checked". Confirm with the GraphQL explorer once the token
+  exists and adjust `fetchErrorBuckets` in `src/errors.js` (e.g. to `datetimeMinute`, summing per 5 minutes).
+- **Access seats**: needs *Access: Users Read*; the response field `access_seat` is read per user. Without the
+  permission the check shows "not checked".
+- **Restore drill on Workers Free**: D1 allows 50 queries per invocation on the free plan (1,000 on Paid); the drill runs
+  one batch per 200 statements plus a count per table, so large databases can exceed it on Free and the drill is then
+  recorded as failed (`restore_drill_failed`). Fine on Workers Paid. Decompressing a large backup can also exceed the free
+  10 ms CPU limit.
 - Cron triggers: Workers Free allows 5 per account; this Worker uses 3 (monitoring, auto-fix, backups). If the
   account has no free slot, `wrangler deploy` fails: drop `2-59/5 * * * *` from `wrangler.jsonc`; the auto-fix queue
   and verification then stop (triage and critical starts still work; revert by hand).
