@@ -107,7 +107,7 @@ With the `CF_API_TOKEN` secret (without it these show "not checked" and never al
 
 | Check | How often | Alert |
 | --- | --- | --- |
-| Latest Workers Builds deploy of `main` for `overyondr-website-v1`, `yondr-ad-portal`, `yondr-christmas-cards` (PR preview builds ignored) | 5 min | failed = **deploy failed** (high) |
+| Latest Workers Builds deploy of `main` for `overyondr-website-v1`, `overyondr-website-v2`, `yondr-ad-portal`, `yondr-christmas-cards` (PR preview builds ignored) | 5 min | failed = **deploy failed** (high) |
 | Access app **"Yondr sites (Google sign-in)"** lists every gated host (incl. `ops.`) and has a Bypass policy | hourly | missing = configuration changed (warning: costs seats) |
 | Workers, D1, KV, R2 vs `EXPECTED_INVENTORY` (= OPERATIONS.md §1) | hourly | new or missing = configuration changed (warning) |
 | Today's usage (UTC): Workers requests (100k), D1 rows read (5M) / written (100k), Workers AI neurons (10k) | hourly | ≥ 70 % warning, ≥ 90 % high |

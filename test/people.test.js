@@ -109,7 +109,7 @@ test('overview: one call with sites, incidents, issues, auto-fix, backups, setup
   const r = await call('/api/overview');
   assert.equal(r.status, 200);
   const d = r.data;
-  assert.equal(d.sites.length, 7);
+  assert.equal(d.sites.length, 8);
   assert.equal(d.feedback.critical_open, 1);
   assert.equal(d.feedback.new_total, 2);
   assert.ok(d.setup.secrets.find((s) => s.worker === 'yondr-ops').missing.includes('CF_API_TOKEN'));
