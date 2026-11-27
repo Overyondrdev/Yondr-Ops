@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scanRepo } from './secret-scan.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const problems = [];
@@ -84,6 +85,9 @@ for (const f of files.filter((f) => /\.(m?js|json|jsonc|md|html|css|sql|yml|yaml
   if (SQUARESPACE.test(text) && f !== 'scripts/check.mjs') problems.push(`${f}: references a Squarespace host`);
   if (SECRETS.test(text) && f !== 'scripts/check.mjs') problems.push(`${f}: looks like a secret (Slack webhook URL or API token)`);
 }
+
+// 6. Secrets in tracked files (API keys, tokens, webhook URLs, private keys): scripts/secret-scan.mjs, also run alone.
+problems.push(...scanRepo(ROOT).problems);
 
 if (problems.length) {
   console.error(problems.map((p) => '✗ ' + p).join('\n'));
