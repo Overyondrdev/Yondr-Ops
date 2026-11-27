@@ -143,7 +143,7 @@ test('settings: owners only, validated; secrets reported as set/not set, never t
   assert.equal(s.data.secrets.GITHUB_TOKEN, false);
   assert.doesNotMatch(JSON.stringify(s.data), new RegExp(TOKEN));
   const cfg = await worker.fetch(new Request(BASE + '/api/autofix/config', { headers: { 'x-ops-token': TOKEN } }), env, {});
-  assert.deepEqual(await cfg.json(), { autofix_enabled: true });
+  assert.deepEqual(await cfg.json(), { autofix_enabled: true, reason: null });
 });
 
 test('alerts switched off: logged as skipped, nothing sent; resend transport uses the Resend API', async (t) => {

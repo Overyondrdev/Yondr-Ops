@@ -1,6 +1,7 @@
 // Digests: the daily summary (first monitoring run after daily_digest_hour_utc) and the weekly backup summary
 // (Mondays, after the nightly backups).
 import { dispatch } from './alerts.js';
+import { digestLine, loadBudget } from './budget.js';
 import { DASHBOARD_URL } from './checks.js';
 import { getInternal, setInternal } from './settings.js';
 
@@ -29,6 +30,8 @@ export async function maybeDailyDigest(env, settings, nowMs) {
   lines.push(`Backups: ${okB} of ${backups.length} succeeded${backups.length - okB ? `, ${backups.length - okB} failed` : ''}.`);
   lines.push(`Alerts sent: ${alerts.n}.`);
   if (fixes.length) { lines.push(`Auto-fixes updated: ${fixes.length}.`); for (const f of fixes) lines.push(`• ${f.title} (${f.status})`); }
+  const budget = await loadBudget(db, settings, nowMs).catch(() => null);
+  if (budget) lines.push(digestLine(budget));
   await dispatch(env, {
     type: 'daily_digest', kind: 'digest', severity: 'info',
     title: failing.length ? `Daily digest: ${failing.length} open problem${failing.length > 1 ? 's' : ''}` : 'Daily digest: all clear',

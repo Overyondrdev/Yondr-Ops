@@ -13,6 +13,7 @@ import { handleApi } from './api.js';
 import { currentUser, roleOf } from './auth.js';
 import { ingestAutofix } from './autofix.js';
 import { runBackups } from './backups.js';
+import { autofixConfig } from './budget.js';
 import { COMMON, csrfProblem, json } from './http.js';
 import { hasIngestToken, ingestEvent, TOKEN_ROUTES } from './ingest.js';
 import { runMonitor } from './monitor.js';
@@ -57,7 +58,11 @@ function notFound() {
 
 async function tokenRoute(request, env, key) {
   await ensureSchema(env.DB);
-  if (key === 'GET /api/autofix/config') return json({ autofix_enabled: (await getSettings(env.DB)).autofix_enabled });
+  if (key === 'GET /api/autofix/config') {
+    // The workflows' gate: off when switched off in Settings OR paused because of the monthly budget (src/budget.js).
+    const c = await autofixConfig(env.DB, await getSettings(env.DB));
+    return json({ autofix_enabled: c.autofix_enabled, reason: c.reason });
+  }
   const b = await request.json().catch(() => null);
   const r = key === 'POST /api/events' ? await ingestEvent(env, b)
     : key === 'POST /api/autofix/feedback' ? await triageFeedback(env, b)

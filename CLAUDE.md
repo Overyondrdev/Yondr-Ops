@@ -17,6 +17,7 @@ sign-in, hosts, Access, DNS or deploys.
 | `src/triage.js`, `src/classify.js` | Auto-fix triage (owner's rules: only objective bugs), Workers AI classifier, the GitHub issue |
 | `src/verify.js` | Auto-fix watch: PR backstop, deploy + site verification, automatic revert (own cron) |
 | `src/autofix.js`, `src/github.js` | Auto-fix log and one-click revert |
+| `src/budget.js` | Auto-fix spending (owner's rules: monthly budget, warnings, pause at 90 %, owner approval) |
 | `src/ingest.js` | Token endpoints (`X-Ops-Token`) |
 | `src/api.js`, `src/index.js`, `src/http.js`, `src/auth.js` | Dashboard API, routing and sign-in gate, CSRF, roles |
 | `src/readonly.js` | Read-only wrapper for other tools' databases |
@@ -40,7 +41,8 @@ sign-in, hosts, Access, DNS or deploys.
 - **Own data** (D1 `yondr-ops`): schema changes additive and idempotent (`IF NOT EXISTS`, `ADDED_COLUMNS`);
   `autofix_events` is append-only (the audit log). Locally use `--local` only; never run commands against remote
   databases without the owner's say-so.
-- **Alerts**: owners can't be unsubscribed from `site_down` / `site_exposed`; critical alerts ignore quiet hours. Keep
+- **Alerts**: owners can't be unsubscribed from `site_down` / `site_exposed` or the `autofix_budget_*` alerts; critical
+  alerts and `autofix_budget_*` ignore quiet hours. Auto-fix never spends past the pause level without an owner's approval. Keep
   messages plain (what, which site, since when, what was done, link). New alert types go in `EVENTS` and README.
 - **Never commit secrets, webhook URLs or personal email addresses** (this repository is public). Tests and examples
   use the fictional people allowed in `scripts/check.mjs`. `DEV_EMAIL` only in `.dev.vars`. No names or emails in

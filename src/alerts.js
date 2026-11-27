@@ -8,6 +8,7 @@ export const SEVERITIES = ['info', 'warning', 'high', 'critical'];
 export const RANK = { info: 0, warning: 1, high: 2, critical: 3 };
 
 // ownerForced: owners always get these by email; they can't switch them off (and quiet hours don't apply).
+// ignoreQuiet: nobody's quiet hours hold these back (the auto-fix spending alerts, like critical ones).
 export const EVENTS = {
   site_down: { label: 'Site down', severity: 'critical', ownerForced: true, help: 'A site or the sign-in page is not answering, or answers with an error.' },
   site_exposed: { label: 'Site exposed', severity: 'critical', ownerForced: true, help: 'A private site showed its content to someone who is not signed in.' },
@@ -20,6 +21,10 @@ export const EVENTS = {
   autofix_merged: { label: 'Auto-fix merged', severity: 'info', help: 'An automatic fix is live and verified: its deploy succeeded and the site stayed fine for 15 minutes.' },
   autofix_failed: { label: 'Auto-fix failed', severity: 'high', help: 'An automatic fix failed (checks failed or the engine gave up).' },
   autofix_reverted: { label: 'Auto-fix reverted', severity: 'warning', help: 'An automatic fix is being undone: by an admin, or automatically because its deploy or the site failed.' },
+  autofix_budget_warning: { label: 'Auto-fix spending warning', severity: 'warning', ownerForced: true, ignoreQuiet: true, help: 'This month\'s auto-fix spend on the Claude API reached 50 % or 70 % of the budget (once each a month).' },
+  autofix_budget_projection: { label: 'Auto-fix spending forecast', severity: 'warning', ownerForced: true, ignoreQuiet: true, help: 'At the current pace, auto-fix will spend more than this month\'s budget (at most once a day).' },
+  autofix_budget_paused: { label: 'Auto-fix paused (budget)', severity: 'high', ownerForced: true, ignoreQuiet: true, help: 'Auto-fix spend reached the pause level (90 % of the budget): nothing new starts until an owner approves more spend.' },
+  autofix_budget_approved: { label: 'Auto-fix spend approved', severity: 'info', ownerForced: true, ignoreQuiet: true, help: 'An owner approved more auto-fix spend for this month.' },
   feedback_critical: { label: 'Critical feedback', severity: 'high', help: 'Someone sent feedback marked critical.' },
   daily_digest: { label: 'Daily digest', severity: 'info', help: 'Every morning: open problems, incidents and backups of the last day.' },
 };
@@ -70,11 +75,11 @@ export function route(alert, { subscribers, subscriptions, owners = new Set(), n
     const who = sub.channel === 'slack' ? sub.webhook : s.email;
     if (!s.active) { skipped.push({ who, reason: 'paused' }); continue; }
     if (!passesSeverity(s.min_severity, alert.severity)) { skipped.push({ who, reason: 'below their severity filter' }); continue; }
-    if (!critical && inQuietHours(nowMs, s.quiet_start, s.quiet_end, s.timezone || 'UTC')) { skipped.push({ who, reason: 'quiet hours' }); continue; }
+    if (!critical && !(EVENTS[alert.type] && EVENTS[alert.type].ignoreQuiet) && inQuietHours(nowMs, s.quiet_start, s.quiet_end, s.timezone || 'UTC')) { skipped.push({ who, reason: 'quiet hours' }); continue; }
     if (sub.channel === 'email') email.add(s.email);
     else if (sub.channel === 'slack' && WEBHOOK_NAME.test(sub.webhook)) slack.add(sub.webhook);
   }
-  // Owners always hear about sites that are down or exposed, whatever their own settings say.
+  // Owners always hear about sites that are down or exposed, and about auto-fix spending, whatever their settings say.
   if (EVENTS[alert.type] && EVENTS[alert.type].ownerForced) for (const o of owners) email.add(o);
   return { email: [...email].sort(), slack: [...slack].sort(), skipped };
 }

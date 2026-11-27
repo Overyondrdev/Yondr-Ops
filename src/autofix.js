@@ -2,6 +2,7 @@
 // Triage and starting fixes: src/triage.js. Post-merge verification and automatic revert: src/verify.js.
 // autofixes holds the current state of each fix; autofix_events is the append-only audit log (never updated).
 import { dispatch } from './alerts.js';
+import { parseCost, recordCost, usd } from './budget.js';
 import { ALLOWED_REPOS, DASHBOARD_URL } from './checks.js';
 import { openRevertPr, RevertRefused } from './github.js';
 import { getSettings } from './settings.js';
@@ -85,6 +86,12 @@ export async function ingestAutofix(env, body) {
     }
     const changes = keys.filter((k) => prev[k] !== v.fields[k]).map((k) => (k === 'status' ? `status ${prev.status} → ${v.fields.status}` : k));
     await addEvent(db, id, v.actor, v.fields.status || prev.status, v.message || (changes.length ? `Updated: ${changes.join(', ')}` : 'No change'));
+  }
+  // The workflow run's Claude API cost (cost_usd / cost_unknown, counted once per run_id): src/budget.js.
+  const cost = parseCost(body);
+  if (cost) {
+    const counted = await recordCost(env, id, cost, { settings: await getSettings(db) });
+    if (counted) await addEvent(db, id, v.actor, null, cost.unknown ? 'The Claude API cost of this run could not be read: counted as $2.00 (Auto-fixes → Spend).' : `Claude API cost of this run: ${usd(cost.cost_usd)}.`);
   }
   // Merged: start the verification clock (src/verify.js).
   if (v.fields.status === 'merged') await db.prepare("UPDATE autofixes SET merged_at = COALESCE(merged_at, ?) WHERE id = ?").bind(now, id).run();

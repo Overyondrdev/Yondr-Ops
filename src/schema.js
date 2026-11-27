@@ -163,6 +163,33 @@ export const SCHEMA = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS autofix_events_fix ON autofix_events(autofix_id, id)`,
+  // Auto-fix spending (src/budget.js). One row per workflow run that reported its Claude API cost. cost_usd NULL /
+  // unknown = 1: the cost couldn't be read, counted as BUDGET.unknownRunUsd. Never updated or deleted.
+  `CREATE TABLE IF NOT EXISTS autofix_costs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    autofix_id INTEGER NOT NULL,
+    run_key TEXT NOT NULL,            -- the workflow run (run id + attempt): a repeated report isn't counted twice
+    month TEXT NOT NULL,              -- YYYY-MM (UTC)
+    run_at TEXT NOT NULL,
+    cost_usd REAL,
+    unknown INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (autofix_id, run_key)
+  )`,
+  `CREATE INDEX IF NOT EXISTS autofix_costs_month ON autofix_costs(month, run_at)`,
+  // Owners' approvals of extra auto-fix spend, for one calendar month (UTC) each. Append-only.
+  `CREATE TABLE IF NOT EXISTS autofix_budget_approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT NOT NULL,
+    approved_extra_usd REAL NOT NULL,
+    approved_by TEXT NOT NULL,
+    approved_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS autofix_budget_approvals_month ON autofix_budget_approvals(month)`,
+  // Budget alerts already sent (warn:<month>:<pct>, projection:<day>, paused:<month>:<level>): each goes out once.
+  `CREATE TABLE IF NOT EXISTS autofix_budget_alerts (
+    key TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+  )`,
   // Admin actions in this tool (settings, mutes, people, downloads, reverts).
   `CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

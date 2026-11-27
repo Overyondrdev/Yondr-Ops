@@ -3,7 +3,7 @@
 //   POST /api/events            raise an event (validated, de-duplicated, routed to subscribers)
 //   POST /api/autofix/events    create/update an auto-fix log entry (src/autofix.js)
 //   POST /api/autofix/feedback  the feedback tool reports a new/changed item → auto-fix triage (src/triage.js)
-//   GET  /api/autofix/config    the auto-fix kill switch (also readable by signed-in admins)
+//   GET  /api/autofix/config    the auto-fix gate: kill switch and budget pause (also readable by signed-in admins)
 import { dispatch, EVENTS, SEVERITIES } from './alerts.js';
 import { getSettings } from './settings.js';
 

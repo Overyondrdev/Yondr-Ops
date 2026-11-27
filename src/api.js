@@ -3,6 +3,7 @@
 import { availableWebhooks, DEFAULT_EVENTS, dispatch, EVENT_TYPES, EVENTS, MIN_SEVERITY, ownerEmails, validQuietTime, validTimeZone, WEBHOOK_NAME } from './alerts.js';
 import { getAutofix, listAutofixes, revertAutofix } from './autofix.js';
 import { BACKUP_DATABASES, runBackups } from './backups.js';
+import { approveSpend, autofixConfig, spendReport } from './budget.js';
 import { staticChecks } from './checks.js';
 import { json } from './http.js';
 import { runMonitor } from './monitor.js';
@@ -224,7 +225,18 @@ export async function handleApi(request, env, ctx, route, user) {
   }
 
   if (m === 'GET' && route === 'autofix') return json({ autofixes: await listAutofixes(db, { status: new URL(request.url).searchParams.get('status') }) });
-  if (m === 'GET' && route === 'autofix/config') { const s = await getSettings(db); return json({ autofix_enabled: s.autofix_enabled, autofix_max_per_hour: s.autofix_max_per_hour }); }
+  if (m === 'GET' && route === 'autofix/config') {
+    const s = await getSettings(db);
+    const c = await autofixConfig(db, s);
+    return json({ autofix_enabled: c.autofix_enabled, switched_on: s.autofix_enabled, reason: c.reason, autofix_max_per_hour: s.autofix_max_per_hour, budget: c.budget });
+  }
+  if (m === 'GET' && route === 'autofix/spend') return json(await spendReport(db, await getSettings(db)));
+  if (m === 'POST' && route === 'autofix/budget/approve') {
+    if (!owner) return ownerOnly();
+    const b = await body(request);
+    const r = await approveSpend(env, b.amount_usd, me, { settings: await getSettings(db) });
+    return json(r.body, r.status);
+  }
   if (m === 'GET' && (p = route.match(/^autofix\/(\d+)$/))) {
     const a = await getAutofix(db, Number(p[1]));
     return a ? json({ autofix: a }) : json({ error: 'No such auto-fix.' }, 404);
