@@ -32,7 +32,9 @@ import { loginUrl } from './yondr-session.js';
 const BACKUP_CRON = '17 3 * * *';
 const AUTOFIX_CRON = '2-59/5 * * * *';
 const PUBLIC_FILE = /^\/(robots\.txt|brand\/[\w./-]+)$/;
-const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+// auth.overyondrdev.com: the shared people picker (script) and the directory it reads (/api/people, with credentials).
+const PEOPLE = 'https://auth.overyondrdev.com';
+const CSP = `default-src 'none'; script-src 'self' ${PEOPLE}; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ${PEOPLE}; ` +
   "base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 export function cacheControl(path) {

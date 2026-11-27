@@ -8,6 +8,7 @@ import { cached } from './cfcache.js';
 import { EXPECTED_SECRETS, WORKERS } from './checks.js';
 import { workerSecretNames } from './cloudflare.js';
 import { deploymentsCached } from './deploys.js';
+import { directorySummary } from './directory.js';
 import { lastDrills } from './drill.js';
 import { errorTotals } from './errors.js';
 import { issueCounts } from './issues.js';
@@ -38,7 +39,7 @@ export async function overview(env, { nowMs = Date.now() } = {}) {
   const since24 = new Date(nowMs - DAY).toISOString();
   const weekAgo = new Date(nowMs - 7 * DAY).toISOString();
 
-  const [states, errors24, incidents, issues, autofix, backups, alerts, setup, feedback, keys, clientErrors] = await Promise.all([
+  const [states, errors24, incidents, issues, autofix, backups, alerts, setup, feedback, keys, clientErrors, directory] = await Promise.all([
     db.prepare('SELECT check_id, status, severity, title, since FROM check_state').all().then((r) => new Map(r.results.map((s) => [s.check_id, s]))),
     errorTotals(db, since24),
     part(async () => {
@@ -67,6 +68,7 @@ export async function overview(env, { nowMs = Date.now() } = {}) {
       return { soon: all.filter((k) => k.days_left !== null && k.days_left <= 30), no_date: all.filter((k) => !k.expires_on).length, total: all.length };
     }),
     part(async () => (await db.prepare('SELECT project, SUM(count) AS n FROM client_errors WHERE received_at >= ? GROUP BY project ORDER BY n DESC').bind(since24).all()).results),
+    part(() => directorySummary(env, nowMs)),
   ]);
 
   const siteList = await Promise.all(WORKERS.map(async (w) => {
@@ -91,7 +93,7 @@ export async function overview(env, { nowMs = Date.now() } = {}) {
   }));
   const seats = states.get('cf:access-seats');
   return {
-    sites: siteList, incidents, issues, autofix, backups, alerts, setup, feedback, keys, client_errors: clientErrors,
+    sites: siteList, incidents, issues, autofix, backups, alerts, setup, feedback, keys, client_errors: clientErrors, directory,
     access: { next_review: nextReviewDate(nowMs), seats: seats ? { status: seats.status, title: seats.title } : null },
     cloudflare_token: !!env.CF_API_TOKEN, generated_at: new Date(nowMs).toISOString(),
   };

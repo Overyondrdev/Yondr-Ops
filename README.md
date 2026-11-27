@@ -38,6 +38,7 @@ Platform rules (sign-in, hosts, deploy lessons) live in `Overyondrdev/overyondr-
 | `src/alerts.js` | Alert types, routing (severity, quiet hours, owners), message text, Slack, alert log |
 | `src/email.js` | Email transports: Resend (standard) or Cloudflare Email Service |
 | `src/digest.js` | Daily digest and weekly backup summary |
+| `src/directory.js` | People directory (yondr-auth's KV, **read only**): the `directory:sync` check, the digest line, the Overview line |
 | `src/backups.js` | Nightly D1 → R2 backups and retention |
 | `src/triage.js`, `src/classify.js` | Auto-fix triage (the owner's rules), Workers AI objective/subjective classifier, the GitHub issue |
 | `src/verify.js` | Auto-fix watch: pull-request backstop, deploy + site verification, automatic revert |
@@ -97,6 +98,19 @@ Every 5 minutes (cron `*/5 * * * *`), as a signed-out visitor, without following
 | `feedback./api/me` | 401 | 200 = site exposed |
 | `overyondr.com` | 301 to `www.overyondr.com`, served by Squarespace | warning "overyondr.com has changed" (nothing may change it before the cutover) |
 
+Hourly, without a token: **`directory:sync`**, the people directory of the sign-in Worker (KV `yondr-directory`,
+synced from the Yondr Team Contact List 4 times a day; overyondr-website-v1 `auth/README.md` "People directory").
+Its status endpoint needs a signed-in session, so ops reads the key `directory:meta` through the read-only binding
+`DIRECTORY` instead (`src/directory.js`; `npm run check` fails on any write to it).
+
+| State | Result |
+| --- | --- |
+| Never synced, or the error says "Not set up" | "not checked" (unknown): "Directory not set up yet (service account key missing)." No alert |
+| Last sync OK, last successful sync ≤ 13 hours ago | fine: "103 people, last updated …" |
+| Last sync failed (`ok: false`) | configuration changed (warning) with the error text |
+| Update held back (`guard: true`: it would have removed more than 20 % of people at once) | configuration changed (warning): "People directory update held back" |
+| Last successful sync > 13 hours ago | configuration changed (warning): "People directory is out of date" |
+
 With the `CF_API_TOKEN` secret (without it these show "not checked" and never alert):
 
 | Check | How often | Alert |
@@ -137,7 +151,7 @@ With the `CF_API_TOKEN` secret (without it these show "not checked" and never al
 | `autofix_budget_paused` | high | Spend reached the pause level (90 %): auto-fix paused until an owner approves more | **Owners always**, quiet hours ignored |
 | `autofix_budget_approved` | info | An owner approved more auto-fix spend for this month | **Owners always**, quiet hours ignored |
 | `feedback_critical` | high | Feedback marked critical (sent by the feedback tool via `/api/events`) | new people |
-| `daily_digest` | info | Every morning (first check after 08:00 UTC by default): open problems, incidents, backups, auto-fixes, auto-fix spend this month and forecast | new people |
+| `daily_digest` | info | Every morning (first check after 08:00 UTC by default): open problems, incidents, backups, auto-fixes, auto-fix spend this month and forecast, and a **Directory** line (people count; names of people added to or gone from the directory since the previous digest; names only in this email to admins, never in GitHub issues) | new people |
 | `error_rate` | warning / high | A Worker's error rate over 15 minutes is above 2 % / 10 % (≥ 20 requests) | opt-in |
 | `client_errors_spike` | warning | More than `client_errors_threshold` (default 20) browser errors in 15 minutes for one project (at most hourly per project) | opt-in |
 | `deploy_regression` | high | 15 minutes after a deployment, errors are clearly up or a site check started failing (link to Deploys) | new people |
@@ -161,7 +175,8 @@ to the dashboard. Subjects look like `Website V2 is open to the public [Critical
 
 ### Adding a person (admins)
 
-Dashboard → **Alerts** → *Add a person*: their `@overyondr.com` address and name → **Add**. **Owners** can also add an
+Dashboard → **Alerts** → *Add a person*: type a name or email and pick them from the Yondr directory (the shared
+people picker; it fills the name too), or type the full address → **Add**. **Owners** can also add an
 outside address (e.g. a personal inbox while company mail filtering is being set up): it receives alert emails only and
 never gets sign-in or any access; the audit log marks it `external`. They start with the usual
 email alerts (table above); the editor opens so you can change them. In the editor:
@@ -208,9 +223,17 @@ One email per recipient (nobody sees the others' addresses).
 Left navigation (collapses behind **Menu** on phones). Every page is keyboard operable, works at 375 px and has
 loading, empty and error states.
 
+**Person fields** (Alerts *Add a person*, issue assignee in *New issue*, the issue drawer and the Issues filter,
+*Give someone admin access*, key owner, Audit log *Who*) use the shared Yondr directory picker
+(`https://auth.overyondrdev.com/people-picker.js`, `<input data-people>`; overyondr-website-v1 docs/PLATFORM.md §8):
+type a letter or two, pick with ↓/↑ and Enter. Only the Alerts field also takes outside addresses
+(`data-people-external`; owners only, as before). The fields still accept a typed address, and the server checks
+them exactly as before. In a modal dialog the picker's list is moved into the dialog while it is used (`pickerHome` in
+`public/app.js`), so it isn't hidden behind the dialog.
+
 | Page | What | Who |
 | --- | --- | --- |
-| **Overview** (`#overview`) | Every site (status, last deploy and its result, error rate 24 h), open incidents, open issues by priority, auto-fix (on/off, spend and forecast), backups (last good one per database, last drill), alerts sent in 24 h, setup gaps (missing secrets of yondr-ops, yondr-feedback, yondr-christmas-cards: names only, via `GET …/workers/scripts/<name>/settings`), feedback (new this week per project, critical open; read-only from `FEEDBACK_DB`), keys expiring, next access review, Access seats, browser errors. Each card links to its page. Cloudflare answers are cached 5 minutes in `cf_cache`; refreshes every minute | admins |
+| **Overview** (`#overview`) | Every site (status, last deploy and its result, error rate 24 h), open incidents, open issues by priority, auto-fix (on/off, spend and forecast), backups (last good one per database, last drill), alerts sent in 24 h, setup gaps (missing secrets of yondr-ops, yondr-feedback, yondr-christmas-cards: names only, via `GET …/workers/scripts/<name>/settings`), feedback (new this week per project, critical open; read-only from `FEEDBACK_DB`), keys expiring, next access review, Access seats, people directory ("103 people, updated 2 h ago", or the problem), browser errors. Each card links to its page. Cloudflare answers are cached 5 minutes in `cf_cache`; refreshes every minute | admins |
 | **Issues** (`#issues`, `#issues/<id>`) | The tracker (below) | admins |
 | **Status** (`/status`, `#status`) | Sites up/down, uptime 7 / 30 days (from `check_history`), incidents of the last 7 days in plain words, last checked. Refreshes every minute (pause button); no technical detail | **all staff** |
 | **Sites & checks** (`#checks`) | Every check with details, mutes, *Run checks now*; link to **Incidents** (`#incidents`) | admins |
@@ -684,7 +707,9 @@ Each file starts with `PRAGMA defer_foreign_keys = true;`, then tables, rows, th
   each drill.
 - **CSRF**: every state change needs `X-Yondr-Ops: 1` and `Origin` = `https://ops.overyondrdev.com`. No CORS at all.
 - **Ingest token** compared in constant time; never accepted on the admin API.
-- Dashboard CSP `default-src 'none'`, no inline scripts or styles, `frame-ancestors 'none'`, `noindex`.
+- Dashboard CSP `default-src 'none'`, no inline scripts or styles, `frame-ancestors 'none'`, `noindex`. The one outside
+  origin is `https://auth.overyondrdev.com` in `script-src` and `connect-src`: the shared people picker and the
+  directory it reads (`/api/people`, with the visitor's own session).
 - `DEV_EMAIL` is honoured on `localhost` only (`.dev.vars`), never in `wrangler.jsonc` (`npm run check` fails).
 - Other tools' databases: read-only wrapper; webhook URLs and tokens only in secrets.
 
@@ -705,7 +730,9 @@ Set each with `npx wrangler secret put NAME` (or dashboard → Workers → yondr
 Bindings: `AI` (Workers AI, the auto-fix classifier; about one small request per bug report, against the 10k
 neurons/day free allowance); `DRILL_DB` (D1 `yondr-ops-restore-drill`, `456502b9-…`, already created: scratch database
 for the restore drill only); `FEEDBACK` (service binding to Worker `yondr-feedback`: role changes in People &
-permissions).
+permissions); `DIRECTORY` (KV `yondr-directory`, `5339d657…0536`, owned by the sign-in Worker `yondr-auth`: ops only
+reads `directory:meta` and, for the digest's names, `directory:v1`. KV bindings can't be made read-only, so
+`npm run check` enforces it: only `src/directory.js` touches it, with `get` only).
 
 Plain variables (in `wrangler.jsonc`, safe to commit): `YONDR_AUTH_PUBLIC_JWK`, `ALLOWED_EMAIL_DOMAINS`,
 `EMAIL_FROM`, `EMAIL_FROM_NAME`, `EMAIL_TRANSPORT`. Keep every variable there: `wrangler deploy` replaces dashboard

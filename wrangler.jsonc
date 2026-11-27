@@ -34,6 +34,11 @@
   "services": [
     { "binding": "FEEDBACK", "service": "yondr-feedback" }
   ],
+  // The people directory of the sign-in Worker yondr-auth (KV `yondr-directory`): ops reads the sync status
+  // (directory:meta) and names for the digest. READ ONLY by code (src/directory.js; scripts/check.mjs enforces it).
+  "kv_namespaces": [
+    { "binding": "DIRECTORY", "id": "5339d6576e0f40ca83134966a8d50536" }
+  ],
   "r2_buckets": [
     // Nightly backups (create it first: README "First deploy").
     { "binding": "BACKUPS", "bucket_name": "yondr-ops-backups" }

@@ -69,7 +69,11 @@
     d.appendChild(h('h2', { id: 'dlg-title', text: title }));
     d.appendChild(body);
     d.appendChild(h('div', { class: 'actions' }, [btn('Cancel', function () { d.close(); }), ok]));
-    d.addEventListener('close', function () { d.remove(); });
+    d.addEventListener('close', function () {
+      var box = document.getElementById('ypp-list'); // the people picker's list (pickerHome) must outlive the dialog
+      if (box && d.contains(box)) document.body.appendChild(box);
+      d.remove();
+    });
     document.body.appendChild(d);
     d.showModal();
     return d;
@@ -191,7 +195,9 @@
   // ------------------------------------------------------------- Alerts: people & rules
   function viewAlerts(d) {
     var p = d.people;
-    var email = h('input', { class: 'input', id: 'add-email', type: 'email', autocomplete: 'off', placeholder: 'name@overyondr.com' });
+    // Directory picker (owners may also add an outside address, so data-people-external). Picking someone fills the name.
+    var email = h('input', { class: 'input', id: 'add-email', type: 'email', autocomplete: 'off', placeholder: 'Type a name or email', 'data-people': true, 'data-people-external': true,
+      'onpeople:select': function (e) { name.value = e.detail.name || name.value; } });
     var name = h('input', { class: 'input', id: 'add-name', autocomplete: 'off', placeholder: 'Their name' });
     var add = h('form', { class: 'card', onsubmit: function (e) {
       e.preventDefault();
@@ -505,23 +511,31 @@
     var el = h('select', { class: 'input' }, options.map(function (o) { return h('option', { value: o[0], text: o[1] }); }));
     el.value = value == null ? '' : value; return el;
   }
-  function loadDirectory() {
-    if (S.directory) return Promise.resolve(S.directory);
-    return api('directory').then(function (d) { S.directory = d; return d; });
+  // Person fields use the shared Yondr directory picker (https://auth.overyondrdev.com/people-picker.js, loaded in
+  // index.html): <input data-people>. Its one suggestion list lives in <body>, which a modal <dialog> (top layer)
+  // covers, so while a person field inside an open dialog is in use the list is moved into that dialog, and back to
+  // <body> when the dialog closes (dialog()).
+  function pickerHome(e) {
+    var t = e.target, box = document.getElementById('ypp-list');
+    if (!box || !t || !t.matches || !t.matches('input[data-people]')) return;
+    var home = t.closest('dialog[open]') || document.body;
+    if (box.parentNode !== home) home.appendChild(box);
   }
-  // One <datalist id="people-list"> for the whole page (assignee / owner pickers), filled from the directory once.
-  function peopleList() {
-    if (!document.getElementById('people-list')) {
-      var dl = h('datalist', { id: 'people-list' });
-      document.body.appendChild(dl);
-      loadDirectory().then(function (d) { d.people.forEach(function (p) { dl.appendChild(h('option', { value: p.email, text: p.name || p.email })); }); }).catch(function () {});
-    }
-    return null;
-  }
+  document.addEventListener('focusin', pickerHome);
+  document.addEventListener('input', pickerHome);
+  document.addEventListener('keydown', pickerHome);
   function stateDot(st) { return { ok: 'green', up: 'green', fail: 'red', down: 'red', degraded: 'amber', unknown: 'grey' }[st] || 'grey'; }
   function stateLabel(st) { return { ok: 'Working', up: 'Working', fail: 'Problem', down: 'Down', degraded: 'Not quite right', unknown: 'Not checked yet' }[st] || st; }
 
   // ------------------------------------------------------------- Overview
+  // "103 people, updated 2 h ago" (the sign-in Worker's directory; check directory:sync).
+  function directoryLine(x) {
+    if (!x || x.error) return h('span', { class: 'muted', text: x ? x.error : 'not checked yet' });
+    if (!x.bound) return h('span', { class: 'muted', text: 'not connected (DIRECTORY binding)' });
+    if (x.status === 'unknown') return h('span', { class: 'muted', text: 'not set up yet' });
+    var text = (x.active == null ? '?' : x.active) + ' people, updated ' + ago(x.last_ok);
+    return x.status === 'fail' ? h('span', {}, [pill(x.title || 'Problem', 'st-fail'), ' ', h('span', { class: 'small muted', text: text })]) : h('span', { text: text });
+  }
   function viewOverview(d) {
     var failing = d.sites.filter(function (x) { return x.status === 'fail'; }).length;
     var parts = [head('Overview', 'Everything at a glance. Each card links to its page. Updates every minute.')];
@@ -567,7 +581,8 @@
       return h('li', {}, [pill(k.days_left < 0 ? 'expired' : k.days_left + ' days', k.days_left <= 14 ? 'st-fail' : 'st-neutral'), ' ', k.name, h('span', { class: 'muted small', text: ' · ' + k.location })]); }))
       : h('p', { class: 'ok-text', text: 'Nothing expires in the next 30 days.' }), d.keys.no_date ? h('p', { class: 'small muted', text: d.keys.no_date + ' of ' + d.keys.total + ' keys have no expiry date yet.' }) : null];
     var access = [h('dl', { class: 'mini' }, [h('dt', { text: 'Next access review' }), h('dd', { text: d.access.next_review || '—' }),
-      h('dt', { text: 'Cloudflare Access seats' }), h('dd', {}, [d.access.seats ? pill(d.access.seats.status === 'ok' ? 'None in use' : d.access.seats.status === 'fail' ? d.access.seats.title : 'Not checked', d.access.seats.status === 'ok' ? 'st-ok' : d.access.seats.status === 'fail' ? 'st-fail' : 'st-skipped') : h('span', { class: 'muted', text: 'not checked yet' })])])];
+      h('dt', { text: 'Cloudflare Access seats' }), h('dd', {}, [d.access.seats ? pill(d.access.seats.status === 'ok' ? 'None in use' : d.access.seats.status === 'fail' ? d.access.seats.title : 'Not checked', d.access.seats.status === 'ok' ? 'st-ok' : d.access.seats.status === 'fail' ? 'st-fail' : 'st-skipped') : h('span', { class: 'muted', text: 'not checked yet' })]),
+      h('dt', { text: 'People directory' }), h('dd', {}, [directoryLine(d.directory)])])];
     var ce = d.client_errors.error ? [h('p', { text: d.client_errors.error })] : d.client_errors.length ? [h('ul', { class: 'plain' }, d.client_errors.map(function (c) { return h('li', { text: c.project + ': ' + c.n + ' errors' }); }))] : [h('p', { class: 'ok-text', text: 'None reported in the last 24 hours.' })];
     var alerts = [h('p', {}, [h('b', { class: 'big', text: String(d.alerts.sent_24h || 0) }), ' sent in 24 hours', d.alerts.failed_24h ? h('span', { class: 'warn-text', text: ' · ' + d.alerts.failed_24h + ' failed' }) : null])];
     parts.push(h('div', { class: 'grid cards' }, [sites,
@@ -585,7 +600,7 @@
     var st = select([['active', 'Open, in progress, blocked'], ['', 'All']].concat(Object.keys(ISSUE_ST).map(function (k) { return [k, ISSUE_ST[k]]; })), f.status || '');
     var pr = select([['', 'Any priority']].concat(Object.keys(PRIO).map(function (k) { return [k, PRIO[k]]; })), f.priority || '');
     var src = select([['', 'Any source']].concat(Object.keys(SOURCES).map(function (k) { return [k, SOURCES[k]]; })), f.source || '');
-    var who = h('input', { class: 'input', type: 'text', list: 'people-list', value: f.assignee || '', placeholder: 'anyone, none or an email', autocomplete: 'off' });
+    var who = h('input', { class: 'input', type: 'text', 'data-people': true, value: f.assignee || '', placeholder: 'anyone, none, a name or an email', autocomplete: 'off' });
     var site = h('input', { class: 'input', type: 'text', value: f.site || '', placeholder: 'any' });
     var qq = h('input', { class: 'input', type: 'search', value: f.q || '', placeholder: 'words in title or text' });
     var form = h('form', { class: 'card filters', 'aria-label': 'Filter issues', onsubmit: function (e) {
@@ -593,7 +608,7 @@
       S.issueFilter = { status: st.value, priority: pr.value, source: src.value, assignee: who.value.trim(), site: site.value.trim(), q: qq.value.trim() };
       load();
     } }, [h('div', { class: 'inline' }, [field('f-status', 'Status', st), field('f-prio', 'Priority', pr), field('f-source', 'Source', src), field('f-who', 'Assignee', who), field('f-site', 'Site', site), field('f-q', 'Search', qq),
-      h('button', { type: 'submit', class: 'btn' }, ['Filter'])]), peopleList()]);
+      h('button', { type: 'submit', class: 'btn' }, ['Filter'])])]);
     var rows = d.issues.map(function (i) {
       return h('button', { type: 'button', class: 'row click', onclick: function () { openIssue(i.id); } }, [
         h('span', { class: 'dot ' + (i.status === 'resolved' || i.status === 'wont_fix' ? 'grey' : i.priority === 'critical' || i.priority === 'high' ? 'red' : 'amber'), 'aria-hidden': 'true' }),
@@ -610,12 +625,12 @@
     var title = h('input', { class: 'input', maxlength: '200', required: true });
     var desc = h('textarea', { class: 'input', maxlength: '8000' });
     var prio = select(Object.keys(PRIO).map(function (k) { return [k, PRIO[k]]; }), 'normal');
-    var who = h('input', { class: 'input', type: 'email', list: 'people-list', autocomplete: 'off', placeholder: 'name@overyondr.com' });
+    var who = h('input', { class: 'input', type: 'email', 'data-people': true, autocomplete: 'off', placeholder: 'Type a name or email' });
     var due = h('input', { class: 'input', type: 'date' });
     var site = h('input', { class: 'input', maxlength: '100', placeholder: 'e.g. Website V1' });
     dialog('New issue', h('div', { class: 'form' }, [field('n-title', 'Title', title), field('n-desc', 'What\'s wrong / what to do', desc),
       h('div', { class: 'inline' }, [field('n-prio', 'Priority', prio), field('n-due', 'Due (optional)', due)]),
-      field('n-who', 'Assign to (optional)', who, 'They get an email straight away.'), field('n-site', 'Site (optional)', site), peopleList()]), 'Create', function () {
+      field('n-who', 'Assign to (optional)', who, 'They get an email straight away.'), field('n-site', 'Site (optional)', site)]), 'Create', function () {
       if (!title.value.trim()) { title.focus(); toast('Give it a title'); return false; }
       return api('issues', { method: 'POST', body: { title: title.value, description: desc.value, priority: prio.value, assignee_email: who.value || null, due_at: due.value || null, site: site.value || null } })
         .then(function (r) { toast('Issue #' + r.issue.id + ' created'); return load().then(function () { showIssue(r.issue); }); });
@@ -633,7 +648,7 @@
     history.replaceState(null, '', '#issues/' + i.id);
     var st = select(Object.keys(ISSUE_ST).map(function (k) { return [k, ISSUE_ST[k]]; }), i.status);
     var pr = select(Object.keys(PRIO).map(function (k) { return [k, PRIO[k]]; }), i.priority);
-    var who = h('input', { class: 'input', type: 'email', list: 'people-list', value: i.assignee_email || '', autocomplete: 'off', placeholder: 'Not assigned' });
+    var who = h('input', { class: 'input', type: 'email', 'data-people': true, value: i.assignee_email || '', autocomplete: 'off', placeholder: 'Not assigned' });
     var due = h('input', { class: 'input', type: 'date', value: i.due_at || '' });
     var save = function () {
       return api('issues/' + i.id, { method: 'PATCH', body: { status: st.value, priority: pr.value, assignee_email: who.value.trim() || null, due_at: due.value || null } })
@@ -655,7 +670,7 @@
         h('dt', { text: 'Created' }), h('dd', { text: when(i.created_at) + ' by ' + i.created_by }), i.resolved_at ? h('dt', { text: 'Resolved' }) : null, i.resolved_at ? h('dd', { text: when(i.resolved_at) }) : null]),
       i.description ? h('div', { class: 'card desc', text: i.description }) : null,
       h('div', { class: 'inline' }, [field('i-st', 'Status', st), field('i-pr', 'Priority', pr), field('i-due', 'Due', due)]),
-      field('i-who', 'Assignee', who, 'Anyone in People & permissions. They get an email.'), peopleList(),
+      field('i-who', 'Assignee', who, 'Type a name to pick someone from the Yondr directory. They get an email.'),
       h('div', {}, [btn('Save changes', save, 'primary')]),
       h('h3', { class: 'group', text: 'Timeline' }),
       h('ol', { class: 'timeline' }, i.events.map(function (e) { return h('li', {}, [h('div', {}, [h('div', { class: e.kind === 'comment' ? 'comment' : '', text: e.message }), h('div', { class: 'who', text: when(e.created_at) + ' · ' + e.actor + ' · ' + e.kind })])]); })),
@@ -771,7 +786,7 @@
   function viewPeople(d) {
     S.directory = d;
     var fbAdmins = d.people.filter(function (p) { return p.roles.feedback; });
-    var email = h('input', { class: 'input', type: 'email', autocomplete: 'off', placeholder: 'name@overyondr.com' });
+    var email = h('input', { class: 'input', type: 'email', 'data-people': true, autocomplete: 'off', placeholder: 'Type a name or email' });
     var role = select([['admin', 'Admin']].concat(isOwner() ? [['owner', 'Owner']] : []), 'admin');
     var addForm = h('form', { class: 'card', onsubmit: function (e) {
       e.preventDefault();
@@ -853,13 +868,13 @@
   function keyDialog(k) {
     var name = h('input', { class: 'input', maxlength: '80', value: k ? k.name : '' });
     var loc = h('input', { class: 'input', maxlength: '200', value: k ? k.location : '', placeholder: 'e.g. yondr-ops Worker secret' });
-    var owner = h('input', { class: 'input', type: 'email', list: 'people-list', value: k && k.owner_email ? k.owner_email : '', autocomplete: 'off' });
+    var owner = h('input', { class: 'input', type: 'email', 'data-people': true, value: k && k.owner_email ? k.owner_email : '', autocomplete: 'off' });
     var exp = h('input', { class: 'input', type: 'date', value: k && k.expires_on ? k.expires_on : '' });
     var rot = h('input', { class: 'input', type: 'date', value: k && k.last_rotated ? k.last_rotated : '' });
     var notes = h('textarea', { class: 'input', maxlength: '1000' }); notes.value = k && k.rotation_notes ? k.rotation_notes : '';
     var body = h('div', { class: 'form' }, [h('p', { class: 'banner', text: 'Never paste a key here. Only its name, where it lives and when it expires.' }),
       field('k-name', 'Name', name), field('k-loc', 'Where it lives', loc), h('div', { class: 'inline' }, [field('k-exp', 'Expires on', exp), field('k-rot', 'Last rotated', rot)]),
-      field('k-owner', 'Owner (gets the reminders too)', owner), field('k-notes', 'How to rotate', notes), peopleList(),
+      field('k-owner', 'Owner (gets the reminders too)', owner), field('k-notes', 'How to rotate', notes),
       k && isOwner() ? h('p', {}, [btn('Remove from the calendar', function () { api('keys/' + k.id, { method: 'DELETE' }).then(function () { toast('Removed'); document.querySelector('dialog').close(); load(); }).catch(fail); }, 'danger')]) : null]);
     dialog(k ? 'Edit ' + k.name : 'Add a key', body, 'Save', function () {
       var payload = { name: name.value, location: loc.value, owner_email: owner.value || null, expires_on: exp.value || null, last_rotated: rot.value || null, rotation_notes: notes.value || null };
@@ -869,10 +884,10 @@
 
   // ------------------------------------------------------------- Audit log
   function viewAudit(d) {
-    var actor = h('input', { class: 'input', type: 'email', list: 'people-list', value: S.auditActor || '', autocomplete: 'off' });
+    var actor = h('input', { class: 'input', type: 'email', 'data-people': true, value: S.auditActor || '', autocomplete: 'off' });
     var action = select([['', 'Everything'], ['permission', 'Permissions'], ['issue', 'Issues'], ['deploy', 'Rollbacks'], ['key', 'Keys'], ['settings', 'Settings'], ['autofix', 'Auto-fix'], ['backup', 'Backups'], ['drill', 'Restore drills'], ['person', 'Alert people'], ['check', 'Mutes']], S.auditAction || '');
     var form = h('form', { class: 'card filters', 'aria-label': 'Filter the audit log', onsubmit: function (e) { e.preventDefault(); S.auditActor = actor.value.trim(); S.auditAction = action.value; load(); } },
-      [h('div', { class: 'inline' }, [field('a-actor', 'Who', actor), field('a-action', 'What', action), h('button', { type: 'submit', class: 'btn' }, ['Filter'])]), peopleList()]);
+      [h('div', { class: 'inline' }, [field('a-actor', 'Who', actor), field('a-action', 'What', action), h('button', { type: 'submit', class: 'btn' }, ['Filter'])])]);
     var rows = d.audit.map(function (a) { return h('tr', {}, [h('td', { text: when(a.created_at) }), h('td', { text: a.actor }), h('td', { text: a.action }), h('td', { class: 'small code-text', text: a.detail === '{}' ? '' : a.detail })]); });
     return h('div', {}, [head('Audit log', 'Every change made in Ops: settings, permissions, rollbacks, keys, issues, mutes, downloads. Auto-fix steps have their own timeline.'), form,
       rows.length ? table(['When', 'Who', 'What', 'Details'], rows) : empty('Nothing logged yet.')]);

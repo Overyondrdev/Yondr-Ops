@@ -21,6 +21,7 @@ sign-in, hosts, Access, DNS or deploys.
 | `src/ingest.js` | Token endpoints (`X-Ops-Token`); `client_errors` events go to `src/errors.js` |
 | `src/overview.js`, `src/cfcache.js` | Overview (one call); Cloudflare answers cached 5 minutes in `cf_cache` |
 | `src/issues.js` | Issues tracker (automatic issues, `issue_assigned` / `issue_critical`, from feedback) |
+| `src/directory.js` | People directory (yondr-auth's KV, read only): `directory:sync` check, digest and Overview lines |
 | `src/status.js` | Staff status page (`/status`, all signed-in staff) and uptime history |
 | `src/errors.js`, `src/deploys.js` | Server/browser errors; deployments, deploy watch, owners-only rollback (`CF_DEPLOY_TOKEN`) |
 | `src/drill.js` | Monthly restore drill into `DRILL_DB`: the ONLY file that drops anything |
@@ -70,6 +71,8 @@ sign-in, hosts, Access, DNS or deploys.
 - No runtime dependencies (ask first). `wrangler` is the only dev dependency. Plain JS.
 - Dashboard: accessible (keyboard, focus visible, labels), works at 375 px, `prefers-reduced-motion` respected,
   CSP-clean (no inline scripts or `style=` attributes). Brand look follows the feedback admin.
+- Person fields use the shared directory picker (overyondr-website-v1 docs/PLATFORM.md §8): `<input data-people>`.
+- The people directory KV (`DIRECTORY`, owned by `yondr-auth`) is read-only here: only `src/directory.js`, `get` only.
 - Keep the Worker bundle well under 3 MB (`npm run deploy:dry` prints it; `public/` is capped at 1 MB).
 - **Docs move with code**: checks, alert types, APIs, secrets or backup behaviour change → README in the same PR. A new
   Worker/host/database/bucket → `docs/OPERATIONS.md` §1 in the website repo.

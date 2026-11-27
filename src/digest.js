@@ -3,6 +3,7 @@
 import { dispatch } from './alerts.js';
 import { digestLine, loadBudget } from './budget.js';
 import { DASHBOARD_URL } from './checks.js';
+import { directoryDigestLine, readMeta, readPeople } from './directory.js';
 import { getInternal, setInternal } from './settings.js';
 
 export async function maybeDailyDigest(env, settings, nowMs) {
@@ -32,6 +33,14 @@ export async function maybeDailyDigest(env, settings, nowMs) {
   if (fixes.length) { lines.push(`Auto-fixes updated: ${fixes.length}.`); for (const f of fixes) lines.push(`• ${f.title} (${f.status})`); }
   const budget = await loadBudget(db, settings, nowMs).catch(() => null);
   if (budget) lines.push(digestLine(budget));
+  // People directory: count, and who was added/removed since the previous digest (names: admins only, never in issues).
+  try {
+    const meta = await readMeta(env);
+    const seen = (await getInternal(db, 'last_digest_directory_change')) || since;
+    const changed = !!(meta && meta.last_change && meta.last_change.at > seen);
+    lines.push(...directoryDigestLine(meta, changed ? await readPeople(env) : [], seen));
+    if (changed) await setInternal(db, 'last_digest_directory_change', meta.last_change.at);
+  } catch (e) { lines.push(`Directory: couldn't read the status (${e && e.message}).`); }
   await dispatch(env, {
     type: 'daily_digest', kind: 'digest', severity: 'info',
     title: failing.length ? `Daily digest: ${failing.length} open problem${failing.length > 1 ? 's' : ''}` : 'Daily digest: all clear',
