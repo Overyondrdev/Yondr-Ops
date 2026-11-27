@@ -9,6 +9,7 @@
   --paper: #fafbf7; --card: #ffffff; --line: #d3d6c8; --muted: #4f6b35; --mist: #e7ecdf; --sage: #9dae7e;
   --serif: 'Fraunces', Georgia, serif; --sans: 'Inter Tight', Arial, sans-serif;
   --r: 16px; --ease: cubic-bezier(.2, .7, .2, 1);
+  --header-h: 65px; /* height of the sticky phone header (10px + 44px Menu button + 10px + 1px border) */
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -30,9 +31,12 @@ a { color: var(--g); }
 .side .menu { display: none; background: transparent; color: var(--ow); border-color: rgba(244,249,209,.3); min-height: 44px; }
 .skip { position: absolute; left: 8px; top: -60px; z-index: 80; background: var(--l); color: var(--g); padding: 10px 14px; border-radius: 10px; font-weight: 700; }
 .skip:focus { top: 8px; }
-.side .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 22px; text-decoration: none; color: inherit; }
-.side .brand img { width: 84px; }
-.side .brand span { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: rgba(244,249,209,.65); padding-left: 10px; border-left: 1px solid rgba(244,249,209,.2); }
+.side .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 22px; }
+.side .brand a { color: inherit; text-decoration: none; border-radius: 6px; }
+.side .brand .logo { display: inline-flex; }
+.side .brand img { width: 84px; display: block; }
+.side .brand .home { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: rgba(244,249,209,.65); padding-left: 10px; border-left: 1px solid rgba(244,249,209,.2); }
+.side .brand .home:hover { color: var(--l); }
 .nav { display: grid; gap: 2px; }
 .nav a { display: flex; align-items: center; gap: 12px; color: rgba(244,249,209,.82); padding: 8px 12px; border-radius: 12px; font-weight: 600; text-decoration: none; }
 .nav a:hover { background: rgba(244,249,209,.07); color: var(--ow); }
@@ -196,7 +200,12 @@ th[scope="row"] { text-transform: none; letter-spacing: 0; font-size: 13px; colo
 @media (max-width: 1100px) { .two, .three { grid-template-columns: minmax(0, 1fr); } .card.wide { grid-column: auto; } }
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
-  .side { position: static; height: auto; overflow: visible; padding: 10px 12px; }
+  /* On phones the sidebar becomes a compact header that stays at the top while the page scrolls.
+     z-index: above content, below the drawer scrim (40), toasts (70) and the skip link (80); dialogs use the top layer. */
+  html { scroll-padding-top: var(--header-h); }
+  html:has(.side.staff) { scroll-padding-top: calc(var(--header-h) + 8px); } /* staff header also shows the Sign out row */
+  .side { position: sticky; top: 0; z-index: 30; height: auto; overflow: visible; padding: 10px 12px; min-height: var(--header-h); border-bottom: 1px solid rgba(244,249,209,.14); box-shadow: 0 6px 18px -12px rgba(0,0,0,.45); }
+  .side.open { max-height: 100vh; max-height: 100dvh; overflow-y: auto; overscroll-behavior: contain; }
   .side .brand { padding: 0; } .side .spacer { display: none; }
   .side .menu { display: inline-flex; }
   /* Navigation collapses behind the Menu button on small screens. */

@@ -87,7 +87,10 @@
       var open = !side.classList.contains('open'); side.classList.toggle('open', open); menu.setAttribute('aria-expanded', String(open));
     } }, ['Menu']);
     var side = h('aside', { class: 'side' + (isStaff() ? ' staff' : '') }, [
-      h('div', { class: 'top' }, [h('a', { class: 'brand', href: isStaff() ? '#status' : '#overview' }, [h('img', { src: '/brand/yondr-lichen.svg', alt: 'Yondr' }), h('span', { text: 'Ops' })]), isStaff() ? null : menu]),
+      // The Yondr logo goes to the Dev Portal home (all portals); the "Ops" label next to it goes to this tool's home.
+      h('div', { class: 'top' }, [h('div', { class: 'brand' }, [
+        h('a', { class: 'logo', href: 'https://overyondrdev.com/', 'aria-label': 'Yondr Dev Portal \u2014 all portals' }, [h('img', { src: '/brand/yondr-lichen.svg', alt: '' })]),
+        h('a', { class: 'home', href: isStaff() ? '#status' : '#overview', 'aria-label': isStaff() ? 'Ops status' : 'Ops overview', onclick: function (e) { e.preventDefault(); go(isStaff() ? 'status' : 'overview'); } }, ['Ops'])]), isStaff() ? null : menu]),
       nav, h('div', { class: 'spacer' }),
       h('div', { class: 'me' }, [h('b', { text: S.me.email }), h('span', { text: S.me.role === 'owner' ? 'Owner' : S.me.role === 'admin' ? 'Admin' : 'Staff' }),
         h('a', { href: 'https://auth.overyondrdev.com/logout?return=' + encodeURIComponent(location.origin + '/') }, ['Sign out'])]),
