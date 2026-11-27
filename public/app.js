@@ -948,7 +948,7 @@
         if (!me.staff) return denied();
         S.view = 'status';
         if (location.pathname !== '/status') history.replaceState(null, '', '/status');
-      } else if (LOADERS[parts[0]]) S.view = parts[0];
+      } else if (Object.prototype.hasOwnProperty.call(LOADERS, parts[0])) S.view = parts[0];
       loading();
       return load().then(function () { deepLink(parts); });
     }).catch(function (er) { app.replaceChildren(h('div', { class: 'denied' }, [h('div', {}, [h('h1', { text: 'Can\'t load' }), h('p', { text: er.message })])])); });
@@ -956,7 +956,7 @@
   window.addEventListener('hashchange', function () {
     if (isStaff()) return;
     var parts = route();
-    if (LOADERS[parts[0]] && parts[0] !== S.view) { S.view = parts[0]; load().then(function () { deepLink(parts); }); }
+    if (Object.prototype.hasOwnProperty.call(LOADERS, parts[0]) && parts[0] !== S.view) { S.view = parts[0]; load().then(function () { deepLink(parts); }); }
     else deepLink(parts);
   });
   // Live views refresh every minute (not while a drawer or dialog is open, the tab is hidden, or refresh is paused).
