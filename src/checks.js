@@ -57,7 +57,8 @@ export const BUILDS = { every: 5, workers: [
 export const EXPECTED_INVENTORY = { every: 60,
   workers: ['overyondr-website-v1', 'yondr-feedback', 'yondr-auth', 'yondr-ad-portal', 'yondr-christmas-cards',
     'yondr-marketing-requests', 'yondr-ops'],
-  d1: ['yondr-feedback', 'yondr-ad-portal-db', 'yondr-marketing-requests-db', 'yondr-christmas-cards', 'yondr-ops'],
+  d1: ['yondr-feedback', 'yondr-ad-portal-db', 'yondr-marketing-requests-db', 'yondr-christmas-cards', 'yondr-ops',
+    'yondr-ops-restore-drill'],
   kv: ['yondr-feedback-screenshots'],
   r2: ['yondr-ad-portal-assets', 'yondr-marketing-requests-files', 'yondr-brand-public', 'yondr-ops-backups'],
 };

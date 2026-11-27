@@ -81,13 +81,20 @@ export function evaluateAccess(apps, gatedHosts = GATED_HOSTS, appName = ACCESS_
     return { id, site, ok: false, event: 'config_drift', severity: 'warning', fingerprint: 'missing-app', title: `Access app "${appName}" not found`,
       detail: `The Cloudflare Access application "${appName}" (Bypass for the sites that check the Yondr sign-in themselves) is missing or renamed. Hosts may fall back to the wildcard Access app, and every sign-in there costs a seat.` };
   }
-  const hosts = new Set([app.domain, ...(app.self_hosted_domains || []), ...((app.destinations || []).map((d) => d.uri))].filter(Boolean).map(hostOf));
+  // A host is covered if the main Bypass app lists it, or another Access app with a Bypass policy lists it exactly
+  // (e.g. auth. and cards. have their own Bypass apps). Wildcard apps never count: they are the seat-costing fallback.
+  const appHosts = (a) => [a.domain, ...(a.self_hosted_domains || []), ...((a.destinations || []).map((d) => d.uri))].filter(Boolean).map(hostOf);
+  const hosts = new Set(appHosts(app));
+  for (const other of apps || []) {
+    if (other === app || !(other.policies || []).some((p) => p.decision === 'bypass')) continue;
+    for (const h of appHosts(other)) if (!h.includes('*')) hosts.add(h);
+  }
   const missing = gatedHosts.filter((h) => !hosts.has(h)).sort();
   const policies = app.policies || [];
   const notBypass = policies.length > 0 && !policies.some((p) => p.decision === 'bypass');
-  if (!missing.length && !notBypass) return { id, site, ok: true, detail: `All ${gatedHosts.length} sites are in the Bypass app.` };
+  if (!missing.length && !notBypass) return { id, site, ok: true, detail: `All ${gatedHosts.length} sites are covered by a Bypass app (no Access seats).` };
   const parts = [];
-  if (missing.length) parts.push(`Not in the Bypass app: ${missing.join(', ')}. Signed-in visits to these hosts go through Cloudflare Access and cost a seat each.`);
+  if (missing.length) parts.push(`Not covered by any Bypass app: ${missing.join(', ')}. Signed-in visits to these hosts go through Cloudflare Access and cost a seat each.`);
   if (notBypass) parts.push('The app has no Bypass policy any more.');
   return { id, site, ok: false, event: 'config_drift', severity: 'warning', fingerprint: [...missing, notBypass ? 'no-bypass' : ''].join(','),
     title: missing.length ? `${missing.length} site${missing.length > 1 ? 's' : ''} missing from the Access Bypass app` : 'Access Bypass app has no Bypass policy',
