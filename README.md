@@ -313,8 +313,9 @@ classification says "an admin", not who), and the report's HTML and @mentions ar
      Contents RW, Pull requests RW. Pushes `autofix/ops-<id>`, opens the PR and turns on auto-merge. It must not be
      the Actions `GITHUB_TOKEN`: what that token does starts no workflows (no CI on the PR, no report on merge). It can
      be the same PAT as `GITHUB_TOKEN`.
-3. **`CLAUDE_CODE_OAUTH_TOKEN`** (GitHub org secret, selected repositories): from the owner's Claude subscription,
-   `claude setup-token` on a trusted machine. The **Claude GitHub App** (github.com/apps/claude) is *not* needed: the
+3. **`ANTHROPIC_API_KEY`** (GitHub org secret, selected repositories): a Claude API key created in **Claude Console**
+   (platform.claude.com → API keys), in a workspace with a **monthly spend limit** (owner decision 27 Nov: browser
+   only, no Terminal step). The **Claude GitHub App** (github.com/apps/claude) is *not* needed: the
    workflow deliberately gives Claude the job's read-only `GITHUB_TOKEN` and does every write itself. Installing the
    app is harmless but unused.
 4. **`OPS_INGEST_TOKEN`**: one random value (`openssl rand -hex 32`) as a **Worker secret** on `yondr-ops` and on
@@ -342,7 +343,7 @@ classification says "an admin", not who), and the report's HTML and @mentions ar
 
 - **Off**: Settings → Auto-fix engine → off. Nothing new starts (queued items stay queued); a workflow that starts
   afterwards stops at its gate. Faster still: delete the `AUTOFIX_ACTORS` variable (no workflow runs at all) or revoke
-  `CLAUDE_CODE_OAUTH_TOKEN`/`AUTOFIX_PR_TOKEN`.
+  `ANTHROPIC_API_KEY`/`AUTOFIX_PR_TOKEN`.
 - **Revert a fix**: Auto-fixes → the entry → **Revert this fix** (opens a revert PR, auto-merge on), or the Revert button
   on the fix's pull request in GitHub. Ops reverts automatically when the build of the fix fails or the site breaks
   within 15 minutes of going live.
@@ -366,8 +367,8 @@ classification says "an admin", not who), and the report's HTML and @mentions ar
   can't add labels; comments never trigger anything; pull requests from forks never get these secrets.
 - **What Claude can do**: read and edit files in the checkout and run the build/link check. No `Write`, git commit or
   push, `gh`, `curl` or web tools; strict allow-list (`--permission-mode default`). Its GitHub token is the job's
-  read-only token. Its only secret is `CLAUDE_CODE_OAUTH_TOKEN` (a prompt injection could at worst spend the
-  subscription's usage or leak that token: revoke and rotate it if ever in doubt).
+  read-only token. Its only secret is `ANTHROPIC_API_KEY` (a prompt injection could at worst spend up to the
+  Console spend limit or leak that key: revoke and rotate it if ever in doubt).
 - **What reaches main**: only a patch that passed the mechanical checks twice, as a PR that merges only after the
   required checks. The PAT is used only in steps that never run Claude or repository code. Ops verifies after deploy
   and reverts automatically.
