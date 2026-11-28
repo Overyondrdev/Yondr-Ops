@@ -1,5 +1,10 @@
 # yondr-ops — instructions for Claude
 
+**Start with the [overyondrdev.com Handbook](https://github.com/Overyondrdev/overyondr-website-v1/blob/main/docs/handbook/README.md)**:
+the single source of truth for the whole platform (what runs where, sign-in without Cloudflare seats, portals, people
+directory, operations, auto-fix, how we work, runbooks, decisions). If your change alters what it says, update it in
+the same work (a PR in overyondr-website-v1).
+
 Monitoring, alerts, nightly backups and the auto-fix log for the `overyondrdev.com` estate: Worker `yondr-ops` on
 `ops.overyondrdev.com`. README.md has what is checked, every alert type, people & rules, the APIs, backups and
 restore, secrets with exact permissions, first deploy, deploy and rollback. Platform rules (sign-in, hosts, deploy
